@@ -234,7 +234,7 @@ class CaptureSession:
             port=self.args.port,
             lang=self.args.lang,
             model=self.args.model,
-            use_vad=False,
+            use_vad=True,
             no_speech_thresh=self.args.no_speech_thresh,
             save_output_recording=False,  # this script writes the WAV itself
             output_recording_filename=self.output_wav or self.args.output_recording,

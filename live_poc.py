@@ -28,7 +28,8 @@ your qpwgraph wiring feeds.
 
 Chunk files are written to ``<output>.wav.chunks/`` next to the output file and
 removed on exit; the library's ``chunks/`` directory in the current working
-directory is not used.
+directory is not used.  Pass ``--no-recording`` to skip audio files entirely:
+transcription goes to the server over the websocket and never needs them.
 """
 
 import argparse
@@ -161,9 +162,11 @@ class CaptureSession:
 
     def __init__(self, args):
         self.args = args
-        self.output_wav = os.path.abspath(args.output_recording)
+        self.output_wav = (
+            None if args.no_recording else os.path.abspath(args.output_recording)
+        )
         self.output_srt = os.path.abspath(args.output_srt)
-        self.chunk_dir = f"{self.output_wav}.chunks"
+        self.chunk_dir = f"{self.output_wav}.chunks" if self.output_wav else None
 
         self.tc = None  # TranscriptionClient
         self.pa = None  # PyAudio instance reused from the client
@@ -190,9 +193,16 @@ class CaptureSession:
     # -- signal handling ---------------------------------------------------
 
     def install_signal_handlers(self):
-        """Route SIGINT/SIGTERM to a handler that only sets a flag."""
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            signal.signal(sig, self._handle_signal)
+        """Route termination signals to a handler that only sets a flag.
+
+        ``SIGHUP`` matters for terminal windows: closing the terminal would
+        otherwise kill the process outright, leaving the staging directory
+        behind and never writing the merged recording.
+        """
+        for name in ("SIGINT", "SIGTERM", "SIGHUP"):
+            sig = getattr(signal, name, None)
+            if sig is not None:
+                signal.signal(sig, self._handle_signal)
 
     def _handle_signal(self, signum, frame):
         if not self.interrupted.is_set():
@@ -213,10 +223,11 @@ class CaptureSession:
     # -- setup -------------------------------------------------------------
 
     def _connect(self):
-        for path in (self.output_wav, self.output_srt):
+        for path in filter(None, (self.output_wav, self.output_srt)):
             os.makedirs(os.path.dirname(path), exist_ok=True)
-        shutil.rmtree(self.chunk_dir, ignore_errors=True)
-        os.makedirs(self.chunk_dir, exist_ok=True)
+        if self.chunk_dir:
+            shutil.rmtree(self.chunk_dir, ignore_errors=True)
+            os.makedirs(self.chunk_dir, exist_ok=True)
 
         self.tc = TranscriptionClient(
             host=self.args.host,
@@ -226,12 +237,27 @@ class CaptureSession:
             use_vad=False,
             no_speech_thresh=self.args.no_speech_thresh,
             save_output_recording=False,  # this script writes the WAV itself
-            output_recording_filename=self.output_wav,
+            output_recording_filename=self.output_wav or self.args.output_recording,
             output_transcription_path=self.output_srt,
         )
         self.pa = self.tc.p
         self._release_library_stream()
         self._open_stream()
+
+        if self.output_wav is None:
+            print(
+                "[*] Recording disabled (--no-recording): no audio is written to "
+                "disk, not even temporarily.",
+                flush=True,
+            )
+        else:
+            mb_per_minute = self.rate * self.args.channels * 2 * 60 / 1e6
+            print(
+                f"[*] Recording to {self.output_wav} ({self.rate} Hz, "
+                f"{self.args.channels} ch, ~{mb_per_minute:.1f} MB/min); staged in "
+                f"{self.chunk_dir} and merged then removed on exit.",
+                flush=True,
+            )
 
     def _release_library_stream(self):
         """Close the blocking-read stream the library opened for us."""
@@ -331,14 +357,18 @@ class CaptureSession:
             samples = np.clip(
                 samples.astype(np.float32) * self.args.gain, -32768.0, 32767.0
             ).astype(np.int16)
-        self.frames = np.concatenate((self.frames, samples))
+        if self.output_wav is not None:
+            # Only buffer audio when a recording is actually being written.
+            self.frames = np.concatenate((self.frames, samples))
         self._send_buffer = np.concatenate((self._send_buffer, samples))
 
         if self._send_buffer.size >= int(SEND_BLOCK_SECONDS * self.rate):
             self._send_to_server(self._send_buffer)
             self._send_buffer = np.empty(0, dtype=np.int16)
 
-        if self.frames.size >= self.args.chunk_seconds * self.rate * self.args.channels:
+        if self.output_wav is not None and self.frames.size >= (
+            self.args.chunk_seconds * self.rate * self.args.channels
+        ):
             self._flush_chunk()
 
     def _send_to_server(self, samples):
@@ -375,7 +405,7 @@ class CaptureSession:
         )
 
     def _flush_chunk(self):
-        if self.frames.size == 0:
+        if self.output_wav is None or self.frames.size == 0:
             return
         path = os.path.join(self.chunk_dir, f"{self._chunks_written}.wav")
         _write_wav(path, self.frames.tobytes(), self.args.channels, self.rate)
@@ -469,6 +499,8 @@ class CaptureSession:
             time.sleep(0.05)
 
     def _write_recording(self):
+        if self.output_wav is None:
+            return
         chunk_paths = [
             os.path.join(self.chunk_dir, f"{index}.wav")
             for index in range(self._chunks_written)
@@ -577,6 +609,12 @@ def _parse_args(argv=None):
         "(default: ./output_recording.wav).",
     )
     parser.add_argument(
+        "--no-recording",
+        action="store_true",
+        help="Do not write captured audio to disk at all: no WAV and no chunk "
+        "staging directory. Transcription is unaffected.",
+    )
+    parser.add_argument(
         "--output-srt",
         default="./output.srt",
         help="SRT file for the transcript (default: ./output.srt).",
@@ -614,7 +652,7 @@ def _parse_args(argv=None):
         help="List PortAudio input devices and exit.",
     )
     args = parser.parse_args(argv)
-    if not args.output_recording.endswith(".wav"):
+    if not args.no_recording and not args.output_recording.endswith(".wav"):
         parser.error("--output-recording must end with '.wav'")
     if not args.output_srt.endswith(".srt"):
         parser.error("--output-srt must end with '.srt'")

@@ -990,6 +990,20 @@ class TestRestModelSelection(unittest.TestCase):
         self.assertEqual(mock_model_cls.call_count, 2)
         self.assertEqual(set(self.server.rest_models), {"small", "medium"})
 
+    @patch("whisper_live.server.torch.cuda.is_available", return_value=True)
+    @patch("whisper_live.server.torch.cuda.get_device_capability", return_value=(6, 1))
+    @patch("whisper_live.server.WhisperModel")
+    def test_pascal_cuda_uses_float32(self, mock_model_cls, mock_capability, mock_cuda_available):
+        self.server._get_rest_model("small")
+        self.assertEqual(mock_model_cls.call_args.kwargs["compute_type"], "float32")
+
+    @patch("whisper_live.server.torch.cuda.is_available", return_value=True)
+    @patch("whisper_live.server.torch.cuda.get_device_capability", return_value=(8, 0))
+    @patch("whisper_live.server.WhisperModel")
+    def test_non_pascal_cuda_uses_float16(self, mock_model_cls, mock_capability, mock_cuda_available):
+        self.server._get_rest_model("small")
+        self.assertEqual(mock_model_cls.call_args.kwargs["compute_type"], "float16")
+
     @patch("whisper_live.server.serve")
     def test_run_threads_default_model(self, mock_serve):
         server = TranscriptionServer()

@@ -682,8 +682,12 @@ class TranscriptionServer:
             transcriber = self.rest_models.get(model_name)
             if transcriber is None:
                 device = "cuda" if torch.cuda.is_available() else "cpu"
-                compute_type = "float32" if device == "cuda" else "int8"  # modified to float32 for Nvidia Pascal arch 
-                logging.info(f"Loading REST model '{model_name}' on {device}")
+                if device == "cuda":
+                    major, _ = torch.cuda.get_device_capability()                    
+                    compute_type = "float16" if major >= 7 else "float32"
+                else:
+                    compute_type = "int8"
+                logging.info(f"Loading REST model '{model_name}' on {device} with {compute_type}")
                 transcriber = WhisperModel(model_name, device=device, compute_type=compute_type)
                 self.rest_models[model_name] = transcriber
             return transcriber

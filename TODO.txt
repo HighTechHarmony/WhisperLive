@@ -1,0 +1,22 @@
+Main rule:
+-No audio or text is ever written to disk unless the user commands it. 
+  -Default behavior should be no-record mode
+
+
+Create a GUI app that has the following features:
+
+-"Server" button that can Start, stop and display the running status of the server service
+-"Transcribe" Button that can Start, stop and observe the running status of transcription client
+-"Transcription" box with scrollback buffer, where the live transcription can be viewed as it happens. 
+-Transcribed text goes directly into the transcription box and is not written to disk. It only lives there until the app is closed
+-Transcription in the box can be edited using common text editor controls (select copy paste cut etc.) to fix, redact,or move text, even on the fly during transcription
+-"Go to Live" Button that is a shortcut to scroll down to the bottom from whereever you are so that the latest text can be viewed as it comes in
+-"Save" button that allows the contents of the box to be exported to a file in text format
+-"Summarize" button that sends the selected text in the box to a specified ollama server for summarization by an LLM, and opens the result in a browser
+
+Other necessities and niceties for above:
+-A config file where an ollama url and other details can be easily specified
+-Systemd service unit example
+
+Stretch goals:
+-Some lightweight visual confirmation of incoming audio for verification of proper audio routing

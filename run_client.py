@@ -53,8 +53,8 @@ if __name__ == '__main__':
                           help='Show transcription with timestamps')
     parser.add_argument('--n_display_segments',
                           type=int,
-                          default=4,
-                          help='Number of transcript segments to display in terminal (default: 4).')
+                          default=140,
+                          help='Number of transcript segments to display in terminal (default: 140).')
 
     args = parser.parse_args()
 

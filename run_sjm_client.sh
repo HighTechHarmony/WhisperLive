@@ -12,4 +12,4 @@ if [ ! -x "$VENV_PYTHON" ]; then
 	exit 1
 fi
 
-exec "$VENV_PYTHON" "$SCRIPT_DIR/live_poc.py"
+exec "$VENV_PYTHON" "$SCRIPT_DIR/live_poc.py" "$@"

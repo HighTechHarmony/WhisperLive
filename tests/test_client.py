@@ -166,6 +166,9 @@ class TestPrintTranscript(unittest.TestCase):
 
 
 class TestTranscriptDisplay(BaseTestCase):
+    def test_display_segments_defaults_to_forty(self):
+        self.assertEqual(self.client.display_segments, 40)
+
     @patch("whisper_live.utils.shutil.get_terminal_size")
     @patch("sys.stdout", new_callable=StringIO)
     def test_display_segments_controls_printed_lines(self, mock_stdout, mock_terminal_size):

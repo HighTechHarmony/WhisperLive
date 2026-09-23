@@ -44,7 +44,7 @@ class Client:
         translation_callback=None,
         translation_srt_file_path="output_translated.srt",
         enable_timestamps=False,
-        display_segments=4,
+        display_segments=40,
         hotwords=None,
         enable_diarization=False,
         max_speakers=10,
@@ -80,7 +80,7 @@ class Client:
             target_language (str, optional): Target language for translation. Defaults to 'fr'.
             translation_callback (callable, optional): A callback function to handle translation results. Default is None.
             translation_srt_file_path (str, optional): The file path to save the translated output SRT file. Default is "output_translated.srt".
-            display_segments (int, optional): Number of recent transcript segments to display, and the maximum lines printed. Defaults to 4.
+            display_segments (int, optional): Number of recent transcript segments to display, and the maximum lines printed. Defaults to 40.
             initial_prompt (str, optional): Optional text to provide context to the model (e.g. domain vocabulary or names). Default is None.
             vad_parameters (dict, optional): Optional voice-activity-detection parameters passed to the server backend. Default is None.
             known_speakers (list, optional): Reference clips to enroll in the server's diarizer at connection
@@ -868,7 +868,7 @@ class TranscriptionClient(TranscriptionTeeClient):
         target_language (str, optional): Target language for translation. Defaults to 'fr'.
         translation_callback (callable, optional): A callback function to handle translation results. Default is None.
         translation_srt_file_path (str, optional): The file path to save the translated output SRT file. Default is "output_translated.srt".
-        display_segments (int, optional): Number of recent transcript segments to display, and the maximum lines printed. Defaults to 4.
+        display_segments (int, optional): Number of recent transcript segments to display, and the maximum lines printed. Defaults to 40.
 
     Attributes:
         client (Client): An instance of the underlying Client class responsible for handling the WebSocket connection.
@@ -904,7 +904,7 @@ class TranscriptionClient(TranscriptionTeeClient):
         translation_callback=None,
         translation_srt_file_path="./output_translated.srt",
         enable_timestamps=False,
-        display_segments=4,
+        display_segments=40,
         hotwords=None,
         enable_diarization=False,
         max_speakers=10,

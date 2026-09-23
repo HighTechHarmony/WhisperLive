@@ -65,6 +65,7 @@ SERVER_FLUSH_TIMEOUT = 10.0
 STOP_TIMEOUT = 2.0
 STALL_WARNING = 5.0
 SHUTDOWN_TIMEOUT = 20.0
+DISPLAY_SEGMENTS = 140  # transcript lines kept on screen (client display_segments)
 
 
 class _Aborted(Exception):
@@ -239,6 +240,7 @@ class CaptureSession:
             save_output_recording=False,  # this script writes the WAV itself
             output_recording_filename=self.output_wav or self.args.output_recording,
             output_transcription_path=self.output_srt,
+            display_segments=self.args.n_display_segments,
         )
         self.pa = self.tc.p
         self._release_library_stream()
@@ -618,6 +620,15 @@ def _parse_args(argv=None):
         "--output-srt",
         default="./output.srt",
         help="SRT file for the transcript (default: ./output.srt).",
+    )
+    parser.add_argument(
+        "--n-display-segments",
+        "--n_display_segments",
+        type=int,
+        default=DISPLAY_SEGMENTS,
+        help="Number of transcript segments to keep on screen (default: "
+        f"{DISPLAY_SEGMENTS}). The terminal is cleared on every update, so only "
+        "this many lines stay visible.",
     )
     parser.add_argument(
         "--gain",

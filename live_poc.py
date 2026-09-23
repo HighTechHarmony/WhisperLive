@@ -28,8 +28,9 @@ your qpwgraph wiring feeds.
 
 Chunk files are written to ``<output>.wav.chunks/`` next to the output file and
 removed on exit; the library's ``chunks/`` directory in the current working
-directory is not used.  Pass ``--no-recording`` to skip audio files entirely:
-transcription goes to the server over the websocket and never needs them.
+directory is not used.  Recording is off by default: pass ``--recording`` to
+write the captured audio to disk. Transcription is unaffected either way,
+because it goes to the server over the websocket and never needs the files.
 """
 
 import argparse
@@ -164,7 +165,7 @@ class CaptureSession:
     def __init__(self, args):
         self.args = args
         self.output_wav = (
-            None if args.no_recording else os.path.abspath(args.output_recording)
+            os.path.abspath(args.output_recording) if args.recording else None
         )
         self.output_srt = os.path.abspath(args.output_srt)
         self.chunk_dir = f"{self.output_wav}.chunks" if self.output_wav else None
@@ -240,6 +241,7 @@ class CaptureSession:
             save_output_recording=False,  # this script writes the WAV itself
             output_recording_filename=self.output_wav or self.args.output_recording,
             output_transcription_path=self.output_srt,
+            enable_timestamps=self.args.enable_timestamps,
             display_segments=self.args.n_display_segments,
         )
         self.pa = self.tc.p
@@ -248,8 +250,8 @@ class CaptureSession:
 
         if self.output_wav is None:
             print(
-                "[*] Recording disabled (--no-recording): no audio is written to "
-                "disk, not even temporarily.",
+                "[*] Recording disabled (the default): no audio is written to "
+                "disk, not even temporarily. Pass --recording to keep a WAV.",
                 flush=True,
             )
         else:
@@ -611,10 +613,13 @@ def _parse_args(argv=None):
         "(default: ./output_recording.wav).",
     )
     parser.add_argument(
-        "--no-recording",
-        action="store_true",
-        help="Do not write captured audio to disk at all: no WAV and no chunk "
-        "staging directory. Transcription is unaffected.",
+        "--recording",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Write the captured audio to disk as a WAV, staged in chunks while "
+        "capturing. Off by default: no WAV and no staging directory are "
+        "created. Transcription is unaffected either way, so this only matters "
+        "if you want a recording of the session.",
     )
     parser.add_argument(
         "--output-srt",
@@ -629,6 +634,12 @@ def _parse_args(argv=None):
         help="Number of transcript segments to keep on screen (default: "
         f"{DISPLAY_SEGMENTS}). The terminal is cleared on every update, so only "
         "this many lines stay visible.",
+    )
+    parser.add_argument(
+        "--enable-timestamps",
+        action="store_true",
+        help="Show each transcript segment with its [start -> end] timestamps. "
+        "Off by default, which prints plain text.",
     )
     parser.add_argument(
         "--gain",
@@ -663,7 +674,7 @@ def _parse_args(argv=None):
         help="List PortAudio input devices and exit.",
     )
     args = parser.parse_args(argv)
-    if not args.no_recording and not args.output_recording.endswith(".wav"):
+    if args.recording and not args.output_recording.endswith(".wav"):
         parser.error("--output-recording must end with '.wav'")
     if not args.output_srt.endswith(".srt"):
         parser.error("--output-srt must end with '.srt'")

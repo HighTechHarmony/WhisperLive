@@ -7,9 +7,13 @@
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 VENV_PYTHON="$SCRIPT_DIR/whisper_env/bin/python"
 
+
+# Some assumed command line args 
+ARGS="--n-display-segments 140 --output-srt ./output.srt --enable-timestamps"
+
 if [ ! -x "$VENV_PYTHON" ]; then
 	echo "Virtual-environment Python not found: $VENV_PYTHON" >&2
 	exit 1
 fi
 
-exec "$VENV_PYTHON" "$SCRIPT_DIR/live_poc.py" "$@"
+exec "$VENV_PYTHON" "$SCRIPT_DIR/live_poc.py" $ARGS "$@"

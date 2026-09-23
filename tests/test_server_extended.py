@@ -235,10 +235,10 @@ class TestTranscriptionServerInit(unittest.TestCase):
         with self.assertRaises(ValueError):
             server.run(host="localhost", port=9090, max_clients=-1)
 
-    def test_run_max_connection_time_zero_raises(self):
+    def test_run_max_connection_time_zero_disables_timeout(self):
         server = TranscriptionServer()
-        with self.assertRaises(ValueError):
-            server.run(host="localhost", port=9090, max_connection_time=0)
+        server.run(host="localhost", port=9090, max_connection_time=0)
+        self.assertIsNone(server.client_manager.max_connection_time)
 
     def test_run_batch_max_size_zero_raises(self):
         server = TranscriptionServer()

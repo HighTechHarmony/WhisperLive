@@ -95,13 +95,13 @@ class ClientManager:
 
         Args:
             max_clients (int, optional): The maximum number of simultaneous client connections allowed. Defaults to 4.
-            max_connection_time (int, optional): The maximum duration (in seconds) a client can stay connected. Defaults
-                                                 to 600 seconds (10 minutes).
+            max_connection_time (int, optional): The maximum duration (in seconds) a client can stay connected.
+                                                 Set to 0 to disable the timeout entirely.
         """
         self.clients = {}
         self.start_times = {}
         self.max_clients = max_clients
-        self.max_connection_time = max_connection_time
+        self.max_connection_time = None if max_connection_time == 0 else max_connection_time
         self.lock = threading.Lock()
 
     def add_client(self, websocket, client):
@@ -152,6 +152,8 @@ class ClientManager:
         Returns:
             The estimated wait time in minutes for new clients to connect. Returns 0 if there are available slots.
         """
+        if self.max_connection_time is None:
+            return 0
         with self.lock:
             wait_time = None
             for start_time in self.start_times.values():
@@ -174,10 +176,11 @@ class ClientManager:
         with self.lock:
             if len(self.clients) >= self.max_clients:
                 wait_time = None
-                for start_time in self.start_times.values():
-                    remaining = self.max_connection_time - (time.time() - start_time)
-                    if wait_time is None or remaining < wait_time:
-                        wait_time = remaining
+                if self.max_connection_time is not None:
+                    for start_time in self.start_times.values():
+                        remaining = self.max_connection_time - (time.time() - start_time)
+                        if wait_time is None or remaining < wait_time:
+                            wait_time = remaining
                 wait_time_minutes = wait_time / 60 if wait_time is not None else 0
                 response = {"uid": options["uid"], "status": "WAIT", "message": wait_time_minutes}
                 websocket.send(json.dumps(response))
@@ -194,6 +197,8 @@ class ClientManager:
         Returns:
             True if the client's connection time has exceeded the maximum limit, False otherwise.
         """
+        if self.max_connection_time is None:
+            return False
         with self.lock:
             elapsed_time = time.time() - self.start_times[websocket]
             client = self.clients.get(websocket)
@@ -1098,8 +1103,8 @@ class TranscriptionServer:
 
         if max_clients < 1:
             raise ValueError(f"max_clients must be >= 1, got {max_clients}")
-        if max_connection_time <= 0:
-            raise ValueError(f"max_connection_time must be > 0, got {max_connection_time}")
+        if max_connection_time < 0:
+            raise ValueError(f"max_connection_time must be >= 0, got {max_connection_time}")
         if batch_enabled and batch_max_size < 1:
             raise ValueError(f"batch_max_size must be >= 1, got {batch_max_size}")
         if batch_enabled and batch_window_ms < 0:

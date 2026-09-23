@@ -46,7 +46,7 @@ if __name__ == "__main__":
                         help='Maximum clients supported by the server.')
     parser.add_argument('--max_connection_time',
                         type=int,
-                        default=300,
+                        default=0,
                         help='The maximum duration (in seconds) a client can stay connected. Set to 0 to disable the timeout entirely.')
     parser.add_argument('--cache_path', '-c',
                         type=str,

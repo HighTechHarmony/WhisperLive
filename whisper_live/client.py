@@ -282,7 +282,7 @@ class Client:
             return
 
         if "message" in message.keys() and message["message"] == "DISCONNECT":
-            print("[INFO]: Server disconnected due to overtime.")
+            print("[INFO]: Server disconnected the session.")
             self.recording = False
             self._server_disconnect = True
 

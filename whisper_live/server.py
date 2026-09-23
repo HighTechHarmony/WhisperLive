@@ -89,19 +89,19 @@ def _websocket_auth(api_key, connection, request):
 
 
 class ClientManager:
-    def __init__(self, max_clients=4, max_connection_time=600):
+    def __init__(self, max_clients=4, max_connection_time=0):
         """
         Initializes the ClientManager with specified limits on client connections and connection durations.
 
         Args:
             max_clients (int, optional): The maximum number of simultaneous client connections allowed. Defaults to 4.
             max_connection_time (int, optional): The maximum duration (in seconds) a client can stay connected.
-                                                 Set to 0 to disable the timeout entirely.
+                                                 Set to 0 or None to disable the timeout entirely.
         """
         self.clients = {}
         self.start_times = {}
         self.max_clients = max_clients
-        self.max_connection_time = None if max_connection_time == 0 else max_connection_time
+        self.max_connection_time = None if max_connection_time in (None, 0) else max_connection_time
         self.lock = threading.Lock()
 
     def add_client(self, websocket, client):
@@ -1024,7 +1024,7 @@ class TranscriptionServer:
             trt_py_session=False,
             single_model=False,
             max_clients=4,
-            max_connection_time=600,
+            max_connection_time=0,
             cache_path="~/.cache/whisper-live/",
             rest_port=8000,
             enable_rest=False,
@@ -1103,7 +1103,7 @@ class TranscriptionServer:
 
         if max_clients < 1:
             raise ValueError(f"max_clients must be >= 1, got {max_clients}")
-        if max_connection_time < 0:
+        if max_connection_time is not None and max_connection_time < 0:
             raise ValueError(f"max_connection_time must be >= 0, got {max_connection_time}")
         if batch_enabled and batch_max_size < 1:
             raise ValueError(f"batch_max_size must be >= 1, got {batch_max_size}")

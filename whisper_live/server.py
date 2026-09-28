@@ -29,6 +29,7 @@ from websockets.sync.server import serve
 from websockets.exceptions import ConnectionClosed
 from whisper_live.vad import VoiceActivityDetector
 from whisper_live.backend.base import ServeClientBase
+from whisper_live.utils import resolve_device
 
 logging.basicConfig(level=logging.INFO)
 
@@ -269,13 +270,14 @@ class TranscriptionServer:
         self.transcript_finalizer = None
         self.audio_preprocessor = None
         self.default_model = "small"
+        self.rest_device = "auto"
         self.rest_models = {}
         self.rest_models_lock = threading.Lock()
 
     def initialize_client(
         self, websocket, options, faster_whisper_custom_model_path,
         whisper_tensorrt_path, trt_multilingual, trt_py_session=False,
-        audio_preprocessor=None,
+        audio_preprocessor=None, device="auto",
     ):
         client: Optional[ServeClientBase] = None
 
@@ -296,7 +298,8 @@ class TranscriptionServer:
                 websocket=websocket,
                 translation_queue=translation_queue,
                 target_language=target_language,
-                send_last_n_segments=options.get("send_last_n_segments", 10)
+                send_last_n_segments=options.get("send_last_n_segments", 10),
+                device=device,
             )
             
             # Start translation thread
@@ -388,8 +391,9 @@ class TranscriptionServer:
                     cache_path=self.cache_path,
                     translation_queue=translation_queue,
                     hotwords=options.get("hotwords"),
-                    diarization=self._create_diarizer(options),
+                    diarization=self._create_diarizer(options, device),
                     word_timestamps=options.get("word_timestamps", False),
+                    device=device,
                 )
 
                 logging.info("Running faster_whisper backend.")
@@ -429,7 +433,7 @@ class TranscriptionServer:
 
         self.client_manager.add_client(websocket, client)
 
-    def _create_diarizer(self, options):
+    def _create_diarizer(self, options, device="auto"):
         """Create a SpeakerDiarizer if the client requested diarization.
 
         Diarization is created when the handshake sets ``enable_diarization`` or
@@ -448,6 +452,7 @@ class TranscriptionServer:
                 similarity_threshold=options.get("diarization_threshold", 0.55),
                 max_speakers=max(options.get("max_speakers", 10), len(known_speakers)),
                 hf_token=options.get("hf_token"),
+                device=device,
             )
         except ImportError:
             logging.warning("pyannote.audio not installed; diarization disabled")
@@ -533,7 +538,8 @@ class TranscriptionServer:
         return reason
 
     def handle_new_connection(self, websocket, faster_whisper_custom_model_path,
-                              whisper_tensorrt_path, trt_multilingual, trt_py_session=False):
+                              whisper_tensorrt_path, trt_multilingual, trt_py_session=False,
+                              device="auto"):
         try:
             logging.info("New client connected")
             options = websocket.recv()
@@ -557,7 +563,8 @@ class TranscriptionServer:
             if self.backend.is_tensorrt():
                 self.vad_detector = VoiceActivityDetector(frame_rate=self.RATE)
             self.initialize_client(websocket, options, faster_whisper_custom_model_path,
-                                   whisper_tensorrt_path, trt_multilingual, trt_py_session=trt_py_session)
+                                   whisper_tensorrt_path, trt_multilingual, trt_py_session=trt_py_session,
+                                   device=device)
             wl_metrics.track_connection_opened()
             return True
         except json.JSONDecodeError:
@@ -602,7 +609,8 @@ class TranscriptionServer:
                    faster_whisper_custom_model_path=None,
                    whisper_tensorrt_path=None,
                    trt_multilingual=False,
-                   trt_py_session=False):
+                   trt_py_session=False,
+                   device="auto"):
         """
         Receive audio chunks from a client in an infinite loop.
 
@@ -629,7 +637,8 @@ class TranscriptionServer:
         """
         self.backend = backend
         if not self.handle_new_connection(websocket, faster_whisper_custom_model_path,
-                                          whisper_tensorrt_path, trt_multilingual, trt_py_session=trt_py_session):
+                                          whisper_tensorrt_path, trt_multilingual, trt_py_session=trt_py_session,
+                                          device=device):
             return
 
         try:
@@ -686,7 +695,7 @@ class TranscriptionServer:
         with self.rest_models_lock:
             transcriber = self.rest_models.get(model_name)
             if transcriber is None:
-                device = "cuda" if torch.cuda.is_available() else "cpu"
+                device = resolve_device(self.rest_device)
                 if device == "cuda":
                     major, _ = torch.cuda.get_device_capability()                    
                     compute_type = "float16" if major >= 7 else "float32"
@@ -817,7 +826,7 @@ class TranscriptionServer:
 
     def build_rest_app(self, backend, faster_whisper_custom_model_path=None,
                        whisper_tensorrt_path=None, cors_origins=None,
-                       api_key=None, rate_limit_rpm=0):
+                       api_key=None, rate_limit_rpm=0, device="auto"):
         """Build the OpenAI-compatible REST app served alongside the WebSocket server.
 
         Args:
@@ -828,10 +837,13 @@ class TranscriptionServer:
             api_key (str, optional): When set, every route except ``API_KEY_EXEMPT_PATHS``
                 requires an ``Authorization: Bearer`` header carrying this key.
             rate_limit_rpm (int): Requests per minute per client IP. 0 disables the limit.
+            device (str): Device preference for the REST transcriber: ``auto``,
+                ``cuda`` or ``cpu``.
 
         Returns:
             FastAPI: The configured app.
         """
+        self.rest_device = device
         app = FastAPI(title="WhisperLive OpenAI-Compatible API")
         origins = [o.strip() for o in cors_origins.split(',')] if cors_origins else []
         app.add_middleware(
@@ -1044,7 +1056,8 @@ class TranscriptionServer:
             segment_post_processor=None,
             transcript_finalizer=None,
             audio_preprocessor=None,
-            default_model: str = "small"):
+            default_model: str = "small",
+            device: str = "auto"):
         """
         Run the transcription server.
 
@@ -1095,6 +1108,10 @@ class TranscriptionServer:
                 when the request's ``model`` field is ``whisper-1`` or absent.
                 Defaults to "small". A custom model passed with
                 ``faster_whisper_custom_model_path`` takes precedence.
+            device (str): Device preference for inference: ``auto`` (CUDA when
+                available, otherwise CPU), ``cuda`` or ``cpu``. Applies to the
+                faster-whisper backend, the REST transcriber, diarization and
+                translation. Defaults to "auto".
         """
         self.cache_path = cache_path
         self.raw_pcm_input = raw_pcm_input
@@ -1166,6 +1183,7 @@ class TranscriptionServer:
                 cors_origins=cors_origins,
                 api_key=api_key,
                 rate_limit_rpm=rate_limit_rpm,
+                device=device,
             )
 
             threading.Thread(
@@ -1196,6 +1214,7 @@ class TranscriptionServer:
                 whisper_tensorrt_path=whisper_tensorrt_path,
                 trt_multilingual=trt_multilingual,
                 trt_py_session=trt_py_session,
+                device=device,
             ),
             host,
             port,

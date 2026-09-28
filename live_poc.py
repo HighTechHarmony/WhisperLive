@@ -26,6 +26,27 @@ which on a PipeWire/JACK host frequently points at nothing usable (reads simply
 never deliver frames).  Use ``--list-devices`` and ``--device`` to pick the one
 your qpwgraph wiring feeds.
 
+**Patchbay name.**  PortAudio reaches PipeWire through ALSA, so the node in
+qpwgraph/Helvum is created by whichever ALSA plugin the chosen device uses, and
+is labelled from the interpreter binary unless it is told otherwise:
+``ALSA plug-in [python3.12]`` on the ``pipewire`` PCM, or a
+``<process>.C<pid>.<n>`` JACK client when ``default`` is routed through the
+``jack`` plugin (a common ``~/.asoundrc``).  ``_configure_pipewire_node()``
+replaces both with a fixed identity, using the two property sets the ALSA
+plugins read:
+
+* ``PIPEWIRE_ALSA`` (``node.name``/``node.description``/``application.name``)
+  for the ``pipewire`` PCM, which yields a fully stable node name;
+* ``PIPEWIRE_PROPS`` carrying only ``node.description`` - the key patchbays
+  display - which is what labels a JACK-routed node.  Only the description is
+  set there: a ``node.name`` would outrank ``PIPEWIRE_ALSA`` and would also be
+  shared by every libpipewire client in the process.
+
+Both are defaults only, so anything already exported in the shell wins.  Change
+``--node-description`` for the label seen in the patchbay and ``--node-name``
+for the node name.  A direct ``hw:``/``plughw:`` PCM bypasses PipeWire
+altogether and never appears in the patchbay.
+
 Chunk files are written to ``<output>.wav.chunks/`` next to the output file and
 removed on exit; the library's ``chunks/`` directory in the current working
 directory is not used.  Recording is off by default: pass ``--recording`` to
@@ -48,9 +69,25 @@ import pyaudio
 from scipy.signal import resample_poly
 
 from whisper_live.client import Client, TranscriptionClient
+from whisper_live.summarizer import (
+    DEFAULT_MODEL as AUTO_SUMMARY_MODEL,
+    DEFAULT_URL as AUTO_SUMMARY_URL,
+    AutoSummarizer,
+    parse_interval_minutes,
+)
 
 SERVER_RATE = 16000  # rate WhisperLive expects from clients
 SERVER_CHANNELS = 1
+
+# Patchbay identity for the capture node. PortAudio captures through ALSA, and
+# the plugin the chosen device lands on decides the name: pipewire-alsa reports
+# "ALSA plug-in [<interpreter>]", while a device routed to the jack plugin (a
+# common ~/.asoundrc) becomes a JACK client named "<process>.C<pid>.<n>".
+# Neither is stable across runs or interpreters, so
+# _configure_pipewire_node() pins a node name and a display label instead.
+PIPEWIRE_NODE_NAME = "whisperlive-capture"
+PIPEWIRE_NODE_DESCRIPTION = "WhisperLive Capture"
+PIPEWIRE_APPLICATION_NAME = "WhisperLive"
 
 HOST = "127.0.0.1"
 PORT = 9090
@@ -67,6 +104,13 @@ STOP_TIMEOUT = 2.0
 STALL_WARNING = 5.0
 SHUTDOWN_TIMEOUT = 20.0
 DISPLAY_SEGMENTS = 140  # transcript lines kept on screen (client display_segments)
+AUTO_SUMMARY_MINUTES = "5"  # default interval for --auto-summary-minutes
+TRANSCRIPTS_DIRNAME = "transcripts"  # subfolder holding transcript SRT files
+SUMMARY_DIRNAME = "summaries"  # subfolder holding summary files
+# Seconds to wait for an in-flight final summary at shutdown. Summarizing a block
+# can take a minute or more, so this is deliberately generous; override with
+# --auto-summary-stop-timeout.
+AUTO_SUMMARY_STOP_TIMEOUT = 300.0
 
 
 class _Aborted(Exception):
@@ -91,6 +135,28 @@ def _merge_wavs(chunk_paths, out_path, channels, rate):
         for chunk_path in chunk_paths:
             with wave.open(chunk_path, "rb") as chunk_file:
                 out_file.writeframes(chunk_file.readframes(chunk_file.getnframes()))
+
+
+def _timestamp():
+    """Return a filesystem-friendly local timestamp (``YYYYMMDD_HHMMSS``)."""
+    return time.strftime("%Y%m%d_%H%M%S", time.localtime())
+
+
+def _unique_path(path):
+    """Return ``path``, or ``path`` with a ``_NNN`` suffix if it already exists."""
+    if not os.path.exists(path):
+        return path
+    stem, ext = os.path.splitext(path)
+    for index in range(1, 1000):
+        candidate = f"{stem}_{index:03d}{ext}"
+        if not os.path.exists(candidate):
+            return candidate
+    raise RuntimeError(f"Could not find an unused filename for {path}")
+
+
+def _resolve_output_srt(timestamp, directory):
+    """Return a timestamped, collision-free transcript path inside ``directory``."""
+    return _unique_path(os.path.join(directory, f"transcript_{timestamp}.srt"))
 
 
 def _arm_watchdog(timeout):
@@ -144,6 +210,62 @@ def _resolve_device(pa, spec):
     raise ValueError(f"No input device matches {spec!r}; use --list-devices.")
 
 
+def _spa_prop_value(value):
+    """Sanitise ``value`` for a spa ``{ key = value }`` properties string.
+
+    pipewire-alsa and libpipewire parse these strings themselves, so a quote or
+    backslash in the value would terminate it early and silently drop every
+    property after it. Strip them rather than emit a broken value.
+    """
+    return str(value).replace('"', "").replace("\\", "").strip()
+
+
+def _pipewire_props(name, description):
+    """Render ``name``/``description`` as a ``PIPEWIRE_ALSA`` properties string."""
+    return (
+        "{ "
+        f'node.name = "{_spa_prop_value(name)}" '
+        f'node.description = "{_spa_prop_value(description)}" '
+        f'application.name = "{_spa_prop_value(PIPEWIRE_APPLICATION_NAME)}" '
+        "}"
+    )
+
+
+def _configure_pipewire_node(name, description):
+    """Pin the capture node's identity in the PipeWire patchbay.
+
+    PortAudio reaches PipeWire through ALSA, so the node is named by whichever
+    ALSA plugin the device uses, from the interpreter binary and a PID. Two
+    environment variables replace that with a fixed identity, matching the
+    ``node.name``/``node.description`` a native PipeWire binding would pass:
+
+    * ``PIPEWIRE_ALSA`` - node properties for pipewire-alsa, read by the
+      ``pipewire`` PCM. Gives a fully stable node name.
+    * ``PIPEWIRE_PROPS`` - properties for the libpipewire client, read by
+      pipewire-jack, which is where a ``default`` PCM routed to the ``jack``
+      plugin ends up. Only ``node.description`` is set: that is the key
+      patchbays label nodes with, and setting ``node.name`` here would both
+      outrank ``PIPEWIRE_ALSA`` and be shared by every libpipewire client in
+      the process.
+
+    Both are set here rather than only in the launching shell so the identity is
+    the same however the client is started. A value already present in the
+    environment is left untouched - an explicit choice in the shell wins, and
+    any extra properties the user put there are not discarded.
+
+    Returns ``(props, from_environment)`` for ``PIPEWIRE_ALSA``.
+    """
+    existing = os.environ.get("PIPEWIRE_ALSA")
+    props = existing or _pipewire_props(name, description)
+    if not existing:
+        os.environ["PIPEWIRE_ALSA"] = props
+    os.environ.setdefault(
+        "PIPEWIRE_PROPS",
+        '{ node.description = "%s" }' % _spa_prop_value(description),
+    )
+    return props, bool(existing)
+
+
 def _list_input_devices():
     pa = pyaudio.PyAudio()
     try:
@@ -164,13 +286,23 @@ class CaptureSession:
 
     def __init__(self, args):
         self.args = args
+        self.session_timestamp = _timestamp()
         self.output_wav = (
             os.path.abspath(args.output_recording) if args.recording else None
         )
-        self.output_srt = os.path.abspath(args.output_srt)
+        # Nothing is written to disk unless asked for. TranscriptionClient still
+        # needs a valid .srt path, so a candidate name is always computed; the
+        # file is only created when the transcript output is enabled.
+        self.write_transcript = bool(args.output_srt)
+        self.transcripts_dir = os.path.abspath(TRANSCRIPTS_DIRNAME)
+        self.summary_dir = os.path.abspath(SUMMARY_DIRNAME)
+        self.output_srt = _resolve_output_srt(
+            self.session_timestamp, self.transcripts_dir
+        )
         self.chunk_dir = f"{self.output_wav}.chunks" if self.output_wav else None
 
         self.tc = None  # TranscriptionClient
+        self.summarizer = None  # AutoSummarizer, set when auto-summary is enabled
         self.pa = None  # PyAudio instance reused from the client
         self.stream = None  # callback-mode capture stream
         self.device_index = None
@@ -225,7 +357,10 @@ class CaptureSession:
     # -- setup -------------------------------------------------------------
 
     def _connect(self):
-        for path in filter(None, (self.output_wav, self.output_srt)):
+        outputs = [self.output_wav]
+        if self.write_transcript:
+            outputs.append(self.output_srt)
+        for path in filter(None, outputs):
             os.makedirs(os.path.dirname(path), exist_ok=True)
         if self.chunk_dir:
             shutil.rmtree(self.chunk_dir, ignore_errors=True)
@@ -303,8 +438,25 @@ class CaptureSession:
             f"[*] Capturing from [{self.device_index}] {self.device_name} "
             f"@ {self.rate} Hz, {self.args.channels} ch"
         )
+        self._report_patchbay_name()
         if self.rate != SERVER_RATE:
             print(f"[*] Resampling {self.rate} Hz -> {SERVER_RATE} Hz for the server")
+
+    def _report_patchbay_name(self):
+        """Say how the patchbay will label this capture, and warn if it cannot."""
+        if self.args.pipewire_props_from_env:
+            print(f"[*] Patchbay name from PIPEWIRE_ALSA: {self.args.pipewire_props}")
+        else:
+            print(
+                f"[*] PipeWire patchbay label: \"{self.args.node_description}\" "
+                f"(node name \"{self.args.node_name}\" on a PipeWire ALSA input)"
+            )
+        if "hw:" in self.device_name or "plughw:" in self.device_name:
+            print(
+                "[!] This is a direct ALSA hardware PCM, so it bypasses PipeWire "
+                "and will not appear in the patchbay at all. Select the 'pipewire' "
+                "input (--device pipewire) to get a named node."
+            )
 
     def _wait_for_server(self):
         client = self.tc.client
@@ -420,7 +572,12 @@ class CaptureSession:
 
     def _finalize(self):
         """Persist the recording, then release the connection and the device."""
-        timer = _arm_watchdog(SHUTDOWN_TIMEOUT)
+        stop_timeout = self.args.auto_summary_stop_timeout
+        timeout = SHUTDOWN_TIMEOUT
+        if self.summarizer is not None:
+            # The final summary runs during shutdown; give the watchdog room for it.
+            timeout += stop_timeout
+        timer = _arm_watchdog(timeout)
         try:
             self.interrupted.set()
             self._stop_stream()
@@ -439,11 +596,23 @@ class CaptureSession:
             # 2. Let the server flush its final segments, then save the SRT.
             if self._session_started:
                 self._close_session()
-                try:
-                    self.tc.write_all_clients_srt()
-                    print(f"[*] Transcript written to {self.output_srt}", flush=True)
-                except Exception as exc:
-                    print(f"[!] Could not write {self.output_srt}: {exc}", flush=True)
+                if self.write_transcript:
+                    try:
+                        self.tc.write_all_clients_srt()
+                        print(f"[*] Transcript written to {self.output_srt}", flush=True)
+                    except Exception as exc:
+                        print(f"[!] Could not write {self.output_srt}: {exc}", flush=True)
+
+            # 2b. Summarize whatever text arrived since the last block.
+            if self.summarizer is not None:
+                if self.summarizer.has_pending():
+                    print(
+                        f"[*] Waiting up to {stop_timeout:.0f}s for the final summary "
+                        "to finish ...",
+                        flush=True,
+                    )
+                self.summarizer.stop(timeout=stop_timeout)
+                self.summarizer = None
 
             # 3. Release the audio device.
             self._close_stream()
@@ -556,6 +725,29 @@ class CaptureSession:
                 print(f"[!] Error terminating PortAudio: {exc}", flush=True)
             self.pa = None
 
+    def _start_summarizer(self):
+        """Start periodic Ollama summaries if enabled on the command line."""
+        if not self.args.enable_summaries:
+            return
+        minutes = self.args.auto_summary_minutes
+        if minutes is None:
+            return
+        self.summarizer = AutoSummarizer(
+            client=self.tc.client,
+            interval_minutes=minutes,
+            model=self.args.auto_summary_model,
+            url=self.args.auto_summary_url,
+            output_dir=self.summary_dir,
+            base_timestamp=self.session_timestamp,
+        )
+        self.summarizer.start()
+        print(
+            f"[*] Auto-summary every {minutes:g} min via "
+            f"{self.args.auto_summary_url} ({self.args.auto_summary_model}) -> "
+            f"{self.summary_dir}/summary_{self.session_timestamp}_NNN.md",
+            flush=True,
+        )
+
     # -- entry point -------------------------------------------------------
 
     def run(self):
@@ -563,6 +755,7 @@ class CaptureSession:
             self._connect()
             if not self._wait_for_server():
                 return 0
+            self._start_summarizer()
             print("[*] Listening. Press Ctrl+C to stop and finalize.\n", flush=True)
             self._capture()
         except _Aborted:
@@ -594,6 +787,21 @@ def _parse_args(argv=None):
         "input, which is often the unusable ALSA 'default').",
     )
     parser.add_argument(
+        "--node-name",
+        default=PIPEWIRE_NODE_NAME,
+        help="Name of the capture node in the PipeWire patchbay (default: "
+        f"{PIPEWIRE_NODE_NAME}). Applied through PIPEWIRE_ALSA, so a device on "
+        "the 'pipewire' ALSA PCM gets this exact node name; a device routed to "
+        "the JACK plugin is named by --node-description instead.",
+    )
+    parser.add_argument(
+        "--node-description",
+        default=PIPEWIRE_NODE_DESCRIPTION,
+        help="Label of the capture node in the PipeWire patchbay, which is what "
+        f"qpwgraph and Helvum display (default: {PIPEWIRE_NODE_DESCRIPTION}). "
+        "Applied on both the PipeWire and the JACK capture paths.",
+    )
+    parser.add_argument(
         "--rate",
         type=int,
         default=None,
@@ -623,8 +831,44 @@ def _parse_args(argv=None):
     )
     parser.add_argument(
         "--output-srt",
-        default="./output.srt",
-        help="SRT file for the transcript (default: ./output.srt).",
+        action="store_true",
+        help="Write the transcript to an SRT file in the transcripts/ folder. "
+        "Off by default: no transcript is written to disk. The filename is "
+        "generated automatically, e.g. "
+        "transcripts/transcript_20260928_143000.srt (a numeric suffix is added "
+        "only if that exact name already exists).",
+    )
+    parser.add_argument(
+        "--enable-summaries",
+        action="store_true",
+        help="Generate Ollama summaries of the transcript every "
+        f"{AUTO_SUMMARY_MINUTES} minutes (see --auto-summary-minutes), one file "
+        "per block in the summaries/ folder. Implies --output-srt.",
+    )
+    parser.add_argument(
+        "--auto-summary-minutes",
+        default=AUTO_SUMMARY_MINUTES,
+        help="Minutes between summaries when --enable-summaries is set "
+        f"(default: {AUTO_SUMMARY_MINUTES}). Use 0 or false to disable even when "
+        "--enable-summaries is given.",
+    )
+    parser.add_argument(
+        "--auto-summary-stop-timeout",
+        type=float,
+        default=AUTO_SUMMARY_STOP_TIMEOUT,
+        help="Seconds to wait for an in-flight final summary when shutting down "
+        f"(default: {AUTO_SUMMARY_STOP_TIMEOUT:.0f}). Summarizing a block can take "
+        "a minute or more; raise this if the final summary is abandoned.",
+    )
+    parser.add_argument(
+        "--auto-summary-model",
+        default=AUTO_SUMMARY_MODEL,
+        help=f"Ollama model used for summaries (default: {AUTO_SUMMARY_MODEL}).",
+    )
+    parser.add_argument(
+        "--auto-summary-url",
+        default=AUTO_SUMMARY_URL,
+        help=f"Base URL of the Ollama server (default: {AUTO_SUMMARY_URL}).",
     )
     parser.add_argument(
         "--n-display-segments",
@@ -676,10 +920,16 @@ def _parse_args(argv=None):
     args = parser.parse_args(argv)
     if args.recording and not args.output_recording.endswith(".wav"):
         parser.error("--output-recording must end with '.wav'")
-    if not args.output_srt.endswith(".srt"):
-        parser.error("--output-srt must end with '.srt'")
     if args.channels < 1:
         parser.error("--channels must be at least 1")
+    if args.auto_summary_stop_timeout < 0:
+        parser.error("--auto-summary-stop-timeout must be >= 0")
+    try:
+        args.auto_summary_minutes = parse_interval_minutes(args.auto_summary_minutes)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if args.enable_summaries:
+        args.output_srt = True  # summaries need the transcript
     return args
 
 
@@ -688,6 +938,9 @@ def main():
     if args.list_devices:
         _list_input_devices()
         return 0
+    args.pipewire_props, args.pipewire_props_from_env = _configure_pipewire_node(
+        args.node_name, args.node_description
+    )
     session = CaptureSession(args)
     session.install_signal_handlers()
     return session.run()

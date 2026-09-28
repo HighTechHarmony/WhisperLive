@@ -26,7 +26,8 @@ class ServeClientTranslation(ServeClientBase):
         translation_queue,
         target_language="fr", 
         send_last_n_segments=10,
-        model_name="alirezamsh/small100"
+        model_name="alirezamsh/small100",
+        device="auto",
     ):
         """
         Initialize the translation client.
@@ -43,6 +44,7 @@ class ServeClientTranslation(ServeClientBase):
         self.translation_queue = translation_queue
         self.target_language = target_language
         self.model_name = model_name
+        self.device_pref = device
         self.translated_segments = []
         self.translation_model = None
         self.tokenizer = None
@@ -53,7 +55,8 @@ class ServeClientTranslation(ServeClientBase):
     def load_translation_model(self):
         """Load the translation model and tokenizer."""
         try:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            from whisper_live.utils import resolve_device
+            self.device = torch.device(resolve_device(self.device_pref))
             logging.info(f"Loading translation model on device: {self.device}")
             
             self.translation_model = M2M100ForConditionalGeneration.from_pretrained(

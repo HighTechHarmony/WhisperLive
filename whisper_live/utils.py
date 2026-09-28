@@ -1,3 +1,4 @@
+import logging
 import os
 import shutil
 import textwrap
@@ -97,3 +98,37 @@ def resample(file: str, sr: int = 16000):
 
     output_container.close()
     return resampled_file
+
+
+def resolve_device(device="auto"):
+    """Resolve a device preference (``auto``/``cuda``/``cpu``) to ``cuda`` or ``cpu``.
+
+    ``auto`` selects CUDA when it is available. ``cuda`` falls back to CPU (with
+    a warning) when CUDA is unavailable, so a CPU-only host that leaves the flag
+    at its default still starts.
+
+    Torch is imported lazily so this module stays importable without it (the
+    client requirements do not include torch).
+    """
+    import torch
+
+    if device in (None, "auto"):
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if device == "cpu":
+        return "cpu"
+    if device == "cuda":
+        if torch.cuda.is_available():
+            return "cuda"
+        logging.warning("Device 'cuda' requested but CUDA is not available; using CPU.")
+        return "cpu"
+    raise ValueError(f"Unknown device {device!r}; expected 'auto', 'cuda' or 'cpu'.")
+
+
+def faster_whisper_compute_type(device):
+    """Return the faster-whisper compute type for a resolved device string."""
+    if device != "cuda":
+        return "int8"
+    import torch
+
+    major, _ = torch.cuda.get_device_capability()
+    return "float16" if major >= 7 else "float32"

@@ -52,6 +52,8 @@ class SpeakerDiarizer:
         embedding_model (str): The pyannote embedding model to use.
             Default "pyannote/wespeaker-voxceleb-resnet34-LM".
         hf_token (str or None): HuggingFace token for gated model access.
+        device (str): Device preference for the embedding model: ``auto``,
+            ``cuda`` or ``cpu``. Default ``auto``.
     """
 
     def __init__(
@@ -61,6 +63,7 @@ class SpeakerDiarizer:
         embedding_model="pyannote/wespeaker-voxceleb-resnet34-LM",
         hf_token=None,
         speaker_names=None,
+        device="auto",
     ):
         self.similarity_threshold = similarity_threshold
         self.max_speakers = max_speakers
@@ -70,6 +73,7 @@ class SpeakerDiarizer:
         self._model = None
         self._embedding_model_name = embedding_model
         self._hf_token = hf_token
+        self._device = device
 
     def _next_speaker_id(self):
         if self._speaker_count < len(self.speaker_names):
@@ -88,7 +92,8 @@ class SpeakerDiarizer:
                 self._embedding_model_name,
                 use_auth_token=self._hf_token,
             )
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            from whisper_live.utils import resolve_device
+            device = resolve_device(self._device)
             self._model = Inference(model, window="whole", device=torch.device(device))
             logging.info(f"Speaker embedding model loaded on {device}")
         except ImportError:

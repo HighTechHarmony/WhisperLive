@@ -20,6 +20,13 @@ if __name__ == "__main__":
                         type=str,
                         default='faster_whisper',
                         help='Backends from ["tensorrt", "faster_whisper", "openvino"]')
+    parser.add_argument('--device',
+                        type=str,
+                        choices=['auto', 'cuda', 'cpu'],
+                        default='auto',
+                        help="Device for transcription: 'auto' (CUDA when available, "
+                             "otherwise CPU), 'cuda', or 'cpu'. Use 'cpu' to run "
+                             "without a GPU.")
     parser.add_argument('--faster_whisper_custom_model_path', '-fw',
                         type=str, default=None,
                         help="Custom Faster Whisper Model")
@@ -131,6 +138,7 @@ if __name__ == "__main__":
         "0.0.0.0",
         port=args.port,
         backend=args.backend,
+        device=args.device,
         faster_whisper_custom_model_path=args.faster_whisper_custom_model_path,
         whisper_tensorrt_path=args.trt_model_path,
         trt_multilingual=args.trt_multilingual,

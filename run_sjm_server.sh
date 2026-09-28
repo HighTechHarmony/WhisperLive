@@ -6,7 +6,8 @@
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 VENV_PYTHON="$SCRIPT_DIR/whisper_env/bin/python"
-ARGS="--max_connection_time=0"
+# Run transcription on CPU only (no CUDA). Use --device auto or cuda to use a GPU.
+ARGS="--max_connection_time=0 --device cpu"
 
 if [ ! -x "$VENV_PYTHON" ]; then
 	echo "Virtual-environment Python not found: $VENV_PYTHON" >&2

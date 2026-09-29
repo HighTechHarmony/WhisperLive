@@ -1,0 +1,50 @@
+# Copy this file to config.toml and adjust the values for your system.
+
+[audio]
+# PipeWire source ports mixed into the WhisperLive capture node.
+sources = ["capture_AUX0", "monitor_AUX0"]
+# Capture devices may use their native rate; audio is resampled for WhisperLive.
+sample_rate = 16000
+channels = 1
+gain = 1.0
+# PortAudio input device index or name substring.
+device = "pipewire"
+node_name = "whisperlive-capture"
+node_description = "WhisperLive Capture"
+vad_enabled = true
+no_speech_thresh = 0.45
+chunk_seconds = 60.0
+send_block_seconds = 0.25
+recording = false
+output_recording = "./output_recording.wav"
+
+[server]
+host = "127.0.0.1"
+port = 9090
+lang = "en"
+model = "small"
+ready_timeout = 30.0
+display_segments = 40
+enable_timestamps = true
+# Set true to start the configured systemd service when the GUI opens.
+auto_start_systemd = true
+unit = "whisper-server.service"
+backend = "faster_whisper"
+device = "cpu"
+max_clients = 4
+max_connection_time = 0
+enable_rest = true
+rest_port = 8000
+cors_origins = ["http://localhost:8080", "http://127.0.0.1:8080"]
+
+[llm]
+enabled = true
+# The GUI sends streaming Ollama requests to this endpoint.
+endpoint = "http://127.0.0.1:11434/api/generate"
+model = "ornith-1.5:9b"
+summary_interval_seconds = 600.0
+request_timeout = 300.0
+
+[export]
+save_directory = "~/Documents/Meetings"
+filename_template = "{date}_{time}_{tag}.md"

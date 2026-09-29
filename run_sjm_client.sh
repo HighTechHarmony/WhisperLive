@@ -19,7 +19,7 @@ VENV_PYTHON="$SCRIPT_DIR/whisper_env/bin/python"
 # client is launched. The label applies on both the PipeWire and the JACK
 # capture paths; a direct hw: PCM bypasses PipeWire entirely and never shows up
 # in the patchbay. See --node-name / --node-description in live_poc.py.
-ARGS="--n-display-segments 80 --enable-timestamps --output-srt --enable-summaries --auto-summary-minutes 10"
+ARGS="--n-display-segments 40 --enable-timestamps --output-srt --enable-summaries --auto-summary-minutes 10"
 
 if [ ! -x "$VENV_PYTHON" ]; then
 	echo "Virtual-environment Python not found: $VENV_PYTHON" >&2

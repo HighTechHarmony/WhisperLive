@@ -25,3 +25,4 @@ Audio-Transcription-Chrome/node_modules/
 Audio-Transcription-Chrome/package-lock.json
 summaries/
 transcripts/
+*.srt

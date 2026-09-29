@@ -85,9 +85,13 @@ class MainWindow(QMainWindow):
         footer = QHBoxLayout()
         self.meeting_tag = QLineEdit()
         self.meeting_tag.setPlaceholderText("Meeting Tag")
+        self.summarize_button = QPushButton("Summarize Now")
+        self.summarize_button.setEnabled(self.llm_worker is not None)
+        self.summarize_button.clicked.connect(self._summarize_now)
         self.export_button = QPushButton("Wrap & Export")
         self.export_button.clicked.connect(self._wrap_and_export)
         footer.addWidget(self.meeting_tag, 1)
+        footer.addWidget(self.summarize_button)
         footer.addWidget(self.export_button)
         layout.addLayout(footer)
         self.setCentralWidget(root)
@@ -124,6 +128,9 @@ class MainWindow(QMainWindow):
         self.stt_worker.error.connect(self._on_worker_error)
         if self.llm_worker is not None:
             self.llm_worker.summary_ready.connect(self._on_summary)
+            self.llm_worker.summary_finished.connect(self._on_summary_finished)
+            self.llm_worker.final_summary_ready.connect(self._on_final_summary)
+            self.llm_worker.final_summary_failed.connect(self._on_final_summary_failed)
             self.llm_worker.error.connect(self._on_llm_error)
 
     def _start_server_if_needed(self) -> None:
@@ -177,6 +184,33 @@ class MainWindow(QMainWindow):
         combined = f"{current}\n\n{text}" if current else text
         self._replace_view(self.summary_view, combined)
 
+    def _on_summary_finished(self, generated: bool) -> None:
+        if self._exporting:
+            return
+        self.summarize_button.setEnabled(True)
+        if not generated:
+            self.server_status.setText("No new transcript to summarize")
+
+    def _summarize_now(self) -> None:
+        if self.llm_worker is None or self._exporting:
+            return
+        self.summarize_button.setEnabled(False)
+        self.server_status.setText("Summarizing...")
+        self.llm_worker.request_summary()
+
+    def _on_final_summary(self, text: str) -> None:
+        if text:
+            self._llm_error = None
+            self._last_llm_at = time.monotonic()
+            current = self.summary_view.toPlainText().strip()
+            combined = f"{current}\n\n{text}" if current else text
+            self._replace_view(self.summary_view, combined)
+        self._finish_export()
+
+    def _on_final_summary_failed(self, message: str) -> None:
+        self._llm_error = message
+        self._finish_export()
+
     @staticmethod
     def _replace_view(view: QPlainTextEdit, text: str) -> None:
         view.setPlainText(text)
@@ -206,7 +240,15 @@ class MainWindow(QMainWindow):
             return
         self._exporting = True
         self._updates_suspended = True
+        self.summarize_button.setEnabled(False)
         self.export_button.setEnabled(False)
+        if self.llm_worker is not None:
+            self.server_status.setText("Finalizing summary...")
+            self.llm_worker.request_final_summary()
+            return
+        self._finish_export()
+
+    def _finish_export(self) -> None:
         try:
             path = self._export_path()
             content = self._export_content()
@@ -245,6 +287,7 @@ class MainWindow(QMainWindow):
         finally:
             self._updates_suspended = False
             self._exporting = False
+            self.summarize_button.setEnabled(self.llm_worker is not None)
             self.export_button.setEnabled(True)
 
     def _export_path(self) -> Path:
@@ -259,10 +302,10 @@ class MainWindow(QMainWindow):
     def _export_content(self) -> str:
         return (
             f"# Meeting: {self.meeting_tag.text().strip() or 'meeting'}\n\n"
-            "## Transcript\n\n"
-            f"{self.transcript_view.toPlainText().strip()}\n\n"
             "## Summaries\n\n"
-            f"{self.summary_view.toPlainText().strip()}\n"
+            f"{self.summary_view.toPlainText().strip()}\n\n"
+            "## Transcript\n\n"
+            f"{self.transcript_view.toPlainText().strip()}\n"
         )
 
     def closeEvent(self, event) -> None:

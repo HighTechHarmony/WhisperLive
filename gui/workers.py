@@ -246,6 +246,9 @@ class SttWorker(QThread):
 
 class LlmWorker(QThread):
     summary_ready = pyqtSignal(str)
+    summary_finished = pyqtSignal(bool)
+    final_summary_ready = pyqtSignal(str)
+    final_summary_failed = pyqtSignal(str)
     error = pyqtSignal(str)
 
     def __init__(self, config: LlmConfig, buffer: TranscriptBuffer):
@@ -253,30 +256,76 @@ class LlmWorker(QThread):
         self.config = config
         self.buffer = buffer
         self._stop = threading.Event()
+        self._wake = threading.Event()
+        self._final_requested = False
+        self._command_lock = threading.Lock()
+        self._schedule_lock = threading.Lock()
+        self._next_summary_at = time.monotonic() + self.config.summary_interval_seconds
         self._previous_text = ""
 
     def stop(self) -> None:
         self._stop.set()
+        self._wake.set()
+
+    def request_final_summary(self) -> None:
+        with self._command_lock:
+            self._final_requested = True
+        self._wake.set()
+
+    def request_summary(self) -> None:
+        """Wake the worker and summarize any transcript not covered yet."""
+        self._reset_interval()
+        self._wake.set()
 
     def reset(self) -> None:
         self._previous_text = ""
 
+    def _reset_interval(self) -> None:
+        with self._schedule_lock:
+            self._next_summary_at = time.monotonic() + self.config.summary_interval_seconds
+
     def run(self) -> None:
-        while not self._stop.wait(self.config.summary_interval_seconds):
-            text = self.buffer.snapshot()
-            if not text:
-                continue
-            delta = text[len(self._previous_text) :] if text.startswith(self._previous_text) else text
-            if not delta.strip():
-                continue
-            try:
-                summary = self._request_summary(delta)
-            except Exception as exc:
+        while not self._stop.is_set():
+            with self._schedule_lock:
+                timeout = max(0.0, self._next_summary_at - time.monotonic())
+            self._wake.wait(timeout)
+            self._wake.clear()
+            if self._stop.is_set():
+                return
+            with self._command_lock:
+                final_requested = self._final_requested
+                self._final_requested = False
+            self._summarize_current(final=final_requested)
+            self._reset_interval()
+
+    def _summarize_current(self, final: bool = False) -> None:
+        text = self.buffer.snapshot()
+        if not text:
+            if final:
+                self.final_summary_ready.emit("")
+            self.summary_finished.emit(False)
+            return
+        delta = text[len(self._previous_text) :] if text.startswith(self._previous_text) else text
+        if not delta.strip():
+            if final:
+                self.final_summary_ready.emit("")
+            self.summary_finished.emit(False)
+            return
+        try:
+            summary = self._request_summary(delta)
+        except Exception as exc:
+            if final:
+                self.final_summary_failed.emit(str(exc))
+            else:
                 self.error.emit(str(exc))
-                continue
-            self._previous_text = text
-            if summary:
-                self.summary_ready.emit(summary)
+            self.summary_finished.emit(False)
+            return
+        self._previous_text = text
+        if final:
+            self.final_summary_ready.emit(summary)
+        elif summary:
+            self.summary_ready.emit(summary)
+        self.summary_finished.emit(bool(summary))
 
     def _request_summary(self, text: str) -> str:
         payload = json.dumps(

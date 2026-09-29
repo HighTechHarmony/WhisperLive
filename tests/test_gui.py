@@ -2,11 +2,12 @@ import io
 import json
 import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from gui.config import load_config
+from gui.config import LlmConfig, load_config
 from gui.pipewire import PipeWireRouter
 from gui.workers import LlmWorker, TranscriptBuffer
 
@@ -105,9 +106,61 @@ class WorkerSupportTests(unittest.TestCase):
                     ]
                 )
 
-        from gui.config import LlmConfig
-
         worker = LlmWorker(LlmConfig(), TranscriptBuffer())
         with patch("gui.workers.urllib.request.urlopen", return_value=Response()):
             result = worker._request_summary("transcript")
         self.assertEqual(result, "first summary")
+
+    def test_llm_worker_emits_final_summary_for_pending_text(self):
+        worker = LlmWorker(LlmConfig(), TranscriptBuffer())
+        worker.buffer.set("pending transcript")
+        summaries = []
+        worker.final_summary_ready.connect(summaries.append)
+        with patch.object(worker, "_request_summary", return_value="final summary"):
+            worker._summarize_current(final=True)
+        self.assertEqual(summaries, ["final summary"])
+
+    def test_manual_request_wakes_worker_before_interval(self):
+        worker = LlmWorker(
+            LlmConfig(summary_interval_seconds=60), TranscriptBuffer()
+        )
+        worker.buffer.set("pending transcript")
+        completed = threading.Event()
+
+        def summarize(_text):
+            completed.set()
+            return "manual summary"
+
+        with patch.object(worker, "_request_summary", side_effect=summarize):
+            worker.start()
+            try:
+                worker.request_summary()
+                self.assertTrue(completed.wait(2))
+            finally:
+                worker.stop()
+                worker.wait(2000)
+
+    def test_manual_request_resets_the_autosummary_interval(self):
+        worker = LlmWorker(
+            LlmConfig(summary_interval_seconds=0.5), TranscriptBuffer()
+        )
+        worker.buffer.set("pending transcript")
+        completed = threading.Event()
+        calls = []
+
+        def summarize(_text):
+            calls.append(len(calls) + 1)
+            completed.set()
+            return "summary"
+
+        with patch.object(worker, "_request_summary", side_effect=summarize):
+            worker.start()
+            try:
+                worker.request_summary()
+                self.assertTrue(completed.wait(2))
+                completed.clear()
+                self.assertFalse(completed.wait(0.1))
+            finally:
+                worker.stop()
+                worker.wait(2000)
+        self.assertEqual(calls, [1])

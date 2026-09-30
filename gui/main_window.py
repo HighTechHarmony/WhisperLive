@@ -74,6 +74,38 @@ class MainWindow(QMainWindow):
         header.addWidget(self.relink_button)
         layout.addLayout(header)
 
+        controls = QHBoxLayout()
+        self.listen_button = QPushButton("Listening")
+        self.listen_button.setObjectName("toggleButton")
+        self.listen_button.setCheckable(True)
+        self.listen_button.setChecked(True)
+        self.listen_button.toggled.connect(self._toggle_listening)
+        self.auto_summary_button = QPushButton("Auto Summarizing")
+        self.auto_summary_button.setObjectName("toggleButton")
+        self.auto_summary_button.setCheckable(True)
+        self.auto_summary_button.setChecked(True)
+        self.auto_summary_button.setEnabled(self.llm_worker is not None)
+        self.auto_summary_button.toggled.connect(self._toggle_auto_summary)
+        self.summarize_button = QPushButton("Summarize Now")
+        self.summarize_button.setEnabled(self.llm_worker is not None)
+        self.summarize_button.clicked.connect(self._summarize_now)
+        self.clear_transcript_button = QPushButton("Clear Transcript")
+        self.clear_transcript_button.clicked.connect(self._clear_transcript)
+        self.clear_summaries_button = QPushButton("Clear Summaries")
+        self.clear_summaries_button.clicked.connect(self._clear_summaries)
+        for widget in (
+            self.listen_button,
+            self.auto_summary_button,
+            self.summarize_button,
+            self.clear_transcript_button,
+            self.clear_summaries_button,
+        ):
+            controls.addWidget(widget)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+        self._update_toggle_style(self.listen_button, True)
+        self._update_toggle_style(self.auto_summary_button, True)
+
         splitter = QSplitter()
         self.transcript_view = self._make_text_view("Live STT")
         self.summary_view = self._make_text_view("LLM Summaries")
@@ -85,10 +117,7 @@ class MainWindow(QMainWindow):
         footer = QHBoxLayout()
         self.meeting_tag = QLineEdit()
         self.meeting_tag.setPlaceholderText("Meeting Tag")
-        self.summarize_button = QPushButton("Summarize Now")
-        self.summarize_button.setEnabled(self.llm_worker is not None)
-        self.summarize_button.clicked.connect(self._summarize_now)
-        self.export_button = QPushButton("Wrap & Export")
+        self.export_button = QPushButton("Wrap && Export")
         self.export_button.clicked.connect(self._wrap_and_export)
         footer.addWidget(self.meeting_tag, 1)
         footer.addWidget(self.summarize_button)
@@ -108,6 +137,8 @@ class MainWindow(QMainWindow):
                 color: #f4fbfc; padding: 9px 15px; }
             QPushButton:hover { background: #258b9d; }
             QPushButton:disabled { background: #344149; color: #81909a; }
+            QPushButton#toggleButton:checked { background: #2e7d32; }
+            QPushButton#toggleButton:unchecked { background: #68727a; color: #d0d6da; }
             QSplitter::handle { background: #26323a; }
             """
         )
@@ -229,6 +260,34 @@ class MainWindow(QMainWindow):
             label += f"; missing {', '.join(missing)}"
         self.audio_target.setText(label)
 
+    def _toggle_listening(self, checked: bool) -> None:
+        self._update_toggle_style(self.listen_button, checked)
+        self.stt_worker.set_paused(not checked)
+        self.server_status.setText("Listening" if checked else "Paused")
+
+    def _toggle_auto_summary(self, checked: bool) -> None:
+        self._update_toggle_style(self.auto_summary_button, checked)
+        if self.llm_worker is not None:
+            self.llm_worker.set_auto_enabled(checked)
+
+    @staticmethod
+    def _update_toggle_style(button: QPushButton, checked: bool) -> None:
+        font = button.font()
+        font.setStrikeOut(not checked)
+        button.setFont(font)
+
+    def _clear_transcript(self) -> None:
+        self.stt_worker.clear_transcript()
+        self.transcript_view.clear()
+        if self.llm_worker is not None:
+            self.llm_worker.reset()
+        self._last_stt_at = time.monotonic()
+
+    def _clear_summaries(self) -> None:
+        self.summary_view.clear()
+        self._llm_error = None
+        self._last_llm_at = time.monotonic()
+
     def _on_worker_error(self, message: str) -> None:
         self.server_status.setText(f"Error: {message}")
 
@@ -309,6 +368,17 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event) -> None:
+        if self.transcript_view.toPlainText().strip():
+            answer = QMessageBox.question(
+                self,
+                "Confirm Exit",
+                "Are you sure you want to exit?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                event.ignore()
+                return
         self._status_timer.stop()
         self.stt_worker.stop()
         self.stt_worker.wait(3000)

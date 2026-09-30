@@ -3,6 +3,7 @@ import json
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -164,3 +165,29 @@ class WorkerSupportTests(unittest.TestCase):
                 worker.stop()
                 worker.wait(2000)
         self.assertEqual(calls, [1])
+
+    def test_auto_disabled_skips_interval_but_manual_still_runs(self):
+        worker = LlmWorker(
+            LlmConfig(summary_interval_seconds=0.2), TranscriptBuffer()
+        )
+        worker.buffer.set("pending transcript")
+        calls = []
+
+        def summarize(_text):
+            calls.append("summary")
+            return "summary"
+
+        with patch.object(worker, "_request_summary", side_effect=summarize):
+            worker.start()
+            try:
+                worker.set_auto_enabled(False)
+                time.sleep(0.5)
+                self.assertEqual(calls, [])
+                worker.request_summary()
+                deadline = time.time() + 2
+                while not calls and time.time() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(calls, ["summary"])
+            finally:
+                worker.stop()
+                worker.wait(2000)

@@ -55,6 +55,7 @@ class SttWorker(QThread):
         self.buffer = buffer
         self._stop = threading.Event()
         self._reconnect = threading.Event()
+        self._paused = threading.Event()
         self._audio = queue.Queue()
         self._tc = None
         self._stream = None
@@ -68,6 +69,17 @@ class SttWorker(QThread):
 
     def request_reconnect(self) -> None:
         self._reconnect.set()
+
+    def set_paused(self, paused: bool) -> None:
+        if paused:
+            self._paused.set()
+        else:
+            self._paused.clear()
+
+    def clear_transcript(self) -> None:
+        self._segments.clear()
+        self.buffer.clear()
+        self.transcript_updated.emit("")
 
     def run(self) -> None:
         try:
@@ -169,6 +181,15 @@ class SttWorker(QThread):
                     self._connect()
                 send_buffer = np.empty(0, dtype=np.int16)
                 continue
+            if self._paused.is_set():
+                try:
+                    while True:
+                        self._audio.get_nowait()
+                except queue.Empty:
+                    pass
+                send_buffer = np.empty(0, dtype=np.int16)
+                self._stop.wait(0.2)
+                continue
             try:
                 raw = self._audio.get(timeout=0.2)
             except queue.Empty:
@@ -258,6 +279,9 @@ class LlmWorker(QThread):
         self._stop = threading.Event()
         self._wake = threading.Event()
         self._final_requested = False
+        self._manual_requested = False
+        self._auto_enabled = threading.Event()
+        self._auto_enabled.set()
         self._command_lock = threading.Lock()
         self._schedule_lock = threading.Lock()
         self._next_summary_at = time.monotonic() + self.config.summary_interval_seconds
@@ -274,7 +298,17 @@ class LlmWorker(QThread):
 
     def request_summary(self) -> None:
         """Wake the worker and summarize any transcript not covered yet."""
+        with self._command_lock:
+            self._manual_requested = True
         self._reset_interval()
+        self._wake.set()
+
+    def set_auto_enabled(self, enabled: bool) -> None:
+        if enabled:
+            self._auto_enabled.set()
+            self._reset_interval()
+        else:
+            self._auto_enabled.clear()
         self._wake.set()
 
     def reset(self) -> None:
@@ -286,16 +320,32 @@ class LlmWorker(QThread):
 
     def run(self) -> None:
         while not self._stop.is_set():
-            with self._schedule_lock:
-                timeout = max(0.0, self._next_summary_at - time.monotonic())
-            self._wake.wait(timeout)
+            if self._auto_enabled.is_set():
+                with self._schedule_lock:
+                    timeout = max(0.0, self._next_summary_at - time.monotonic())
+                woken = self._wake.wait(timeout)
+            else:
+                self._wake.wait()
+                woken = True
             self._wake.clear()
             if self._stop.is_set():
                 return
             with self._command_lock:
                 final_requested = self._final_requested
                 self._final_requested = False
-            self._summarize_current(final=final_requested)
+                manual_requested = self._manual_requested
+                self._manual_requested = False
+            if final_requested:
+                self._summarize_current(final=True)
+                self._reset_interval()
+                continue
+            if manual_requested:
+                self._summarize_current(final=False)
+                self._reset_interval()
+                continue
+            if woken:
+                continue
+            self._summarize_current(final=False)
             self._reset_interval()
 
     def _summarize_current(self, final: bool = False) -> None:

@@ -29,17 +29,32 @@ class TranscriptBuffer:
     def __init__(self):
         self._lock = threading.Lock()
         self._text = ""
+        self._segments: list[dict] | None = None
 
     def set(self, text: str) -> None:
         with self._lock:
             self._text = text
+            self._segments = None
+
+    def set_transcript(self, text: str, segments: list[dict]) -> None:
+        with self._lock:
+            self._text = text
+            self._segments = [dict(segment) for segment in segments]
 
     def snapshot(self) -> str:
         with self._lock:
             return self._text
 
+    def segments_snapshot(self) -> list[dict] | None:
+        with self._lock:
+            if self._segments is None:
+                return None
+            return [dict(segment) for segment in self._segments]
+
     def clear(self) -> None:
-        self.set("")
+        with self._lock:
+            self._text = ""
+            self._segments = []
 
 
 class SttWorker(QThread):
@@ -237,18 +252,23 @@ class SttWorker(QThread):
                     "text": str(segment.get("text", "")).strip(),
                     "completed": segment.get("completed", False),
                 }
+                if self.server_config.enable_timestamps:
+                    clean["formatted_text"] = (
+                        f"[{clean['start']:.1f} -> {clean['end']:.1f}] {clean['text']}"
+                    )
                 if existing is None:
                     self._segments.append(clean)
                 else:
                     existing.update(clean)
+            self._segments.sort(key=lambda item: item["start"])
             lines = []
-            for segment in self._segments[-self.server_config.display_segments :]:
+            for segment in self._segments:
                 text = segment["text"]
                 if self.server_config.enable_timestamps:
                     text = f"[{segment['start']:.1f} -> {segment['end']:.1f}] {text}"
                 lines.append(text)
         transcript = "\n".join(line for line in lines if line.strip())
-        self.buffer.set(transcript)
+        self.buffer.set_transcript(transcript, self._segments)
         self.transcript_updated.emit(transcript)
 
     def _close_connection(self) -> None:
@@ -299,7 +319,6 @@ class LlmWorker(QThread):
         self._schedule_lock = threading.Lock()
         self._duration_lock = threading.Lock()
         self._next_summary_at = time.monotonic() + self.config.summary_interval_seconds
-        self._previous_text = ""
         self._meeting_duration_seconds = 0.0
 
     def stop(self) -> None:
@@ -312,7 +331,7 @@ class LlmWorker(QThread):
         self._wake.set()
 
     def request_summary(self) -> None:
-        """Wake the worker and summarize any transcript not covered yet."""
+        """Wake the worker and summarize the latest rolling transcript window."""
         with self._command_lock:
             self._manual_requested = True
         self._reset_interval()
@@ -327,7 +346,6 @@ class LlmWorker(QThread):
         self._wake.set()
 
     def reset(self) -> None:
-        self._previous_text = ""
         self.set_meeting_duration(0.0)
 
     def set_meeting_duration(self, seconds: float) -> None:
@@ -382,20 +400,14 @@ class LlmWorker(QThread):
             self._reset_interval()
 
     def _summarize_current(self, final: bool = False) -> None:
-        text = self.buffer.snapshot()
+        text = self._summary_text(final)
         if not text:
             if final:
                 self.final_summary_ready.emit("")
             self.summary_finished.emit(False)
             return
-        delta = text[len(self._previous_text) :] if text.startswith(self._previous_text) else text
-        if not delta.strip():
-            if final:
-                self.final_summary_ready.emit("")
-            self.summary_finished.emit(False)
-            return
         try:
-            summary = self._request_summary(delta)
+            summary = self._request_summary(text)
         except Exception as exc:
             if final:
                 self.final_summary_failed.emit(str(exc))
@@ -403,12 +415,37 @@ class LlmWorker(QThread):
                 self.error.emit(str(exc))
             self.summary_finished.emit(False)
             return
-        self._previous_text = text
         if final:
             self.final_summary_ready.emit(summary)
         elif summary:
             self.summary_ready.emit(summary)
         self.summary_finished.emit(bool(summary))
+
+    def _summary_text(self, final: bool) -> str:
+        if final:
+            return self.buffer.snapshot()
+        segments = self.buffer.segments_snapshot()
+        if segments is None:
+            return self.buffer.snapshot()
+        if not segments:
+            return ""
+        latest_end = max(
+            float(segment.get("end", segment.get("start", 0))) for segment in segments
+        )
+        cutoff = latest_end - self.config.summary_interval_seconds
+        lines = []
+        for segment in segments:
+            start = float(segment.get("start", 0))
+            end = float(segment.get("end", start))
+            if end <= cutoff:
+                continue
+            text = str(segment.get("text", "")).strip()
+            if not text:
+                continue
+            if segment.get("formatted_text"):
+                text = segment["formatted_text"]
+            lines.append(text)
+        return "\n".join(lines)
 
     def _request_summary(self, text: str) -> str:
         duration_seconds = int(self.meeting_duration_seconds())

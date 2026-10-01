@@ -24,6 +24,7 @@ port = 9090
 lang = "en"
 model = "small"
 ready_timeout = 30.0
+# Retained for WhisperLive client display/log output; the GUI keeps all segments.
 display_segments = 40
 enable_timestamps = true
 # Set true to start the configured systemd service when the GUI opens.
@@ -42,6 +43,7 @@ enabled = true
 # The GUI sends streaming Ollama requests to this endpoint.
 endpoint = "http://127.0.0.1:11434/api/generate"
 model = "ornith-1.5:9b"
+# Autosummary cadence and rolling transcript lookback, in seconds.
 summary_interval_seconds = 600.0
 request_timeout = 300.0
 

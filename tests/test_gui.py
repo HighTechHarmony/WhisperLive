@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from gui.config import AudioConfig, LlmConfig, ServerConfig, load_config
+from gui.main_window import MainWindow
 from gui.pipewire import PipeWireRouter
 from gui.workers import LlmWorker, SttWorker, TranscriptBuffer
 
@@ -83,6 +84,23 @@ class GuiConfigTests(unittest.TestCase):
 
 
 class WorkerSupportTests(unittest.TestCase):
+    def test_stt_worker_retains_full_transcript_beyond_display_limit(self):
+        buffer = TranscriptBuffer()
+        worker = SttWorker(AudioConfig(), ServerConfig(display_segments=1), buffer)
+
+        worker._on_transcription(
+            "ignored",
+            [
+                {"start": 0.0, "end": 1.0, "text": "first"},
+                {"start": 2.0, "end": 3.0, "text": "second"},
+            ],
+        )
+
+        self.assertEqual(
+            buffer.snapshot(), "[0.0 -> 1.0] first\n[2.0 -> 3.0] second"
+        )
+        self.assertEqual(len(buffer.segments_snapshot()), 2)
+
     def test_clear_transcript_ignores_stale_callback_until_reconnect(self):
         buffer = TranscriptBuffer()
         worker = SttWorker(AudioConfig(), ServerConfig(), buffer)
@@ -98,6 +116,94 @@ class WorkerSupportTests(unittest.TestCase):
         worker._ignore_transcripts.clear()
         worker._on_transcription("new", [{"start": 0.0, "end": 1.0, "text": "new"}])
         self.assertEqual(buffer.snapshot(), "[0.0 -> 1.0] new")
+        self.assertEqual(len(buffer.segments_snapshot()), 1)
+
+    def test_rolling_summary_uses_only_latest_interval(self):
+        buffer = TranscriptBuffer()
+        buffer.set_transcript(
+            "full transcript",
+            [
+                {
+                    "start": 0.0,
+                    "end": 100.0,
+                    "text": "outside",
+                    "formatted_text": "outside",
+                },
+                {
+                    "start": 101.0,
+                    "end": 300.0,
+                    "text": "inside one",
+                    "formatted_text": "inside one",
+                },
+                {
+                    "start": 500.0,
+                    "end": 700.0,
+                    "text": "inside two",
+                    "formatted_text": "inside two",
+                },
+            ],
+        )
+        worker = LlmWorker(LlmConfig(summary_interval_seconds=600), buffer)
+
+        with patch.object(worker, "_request_summary", return_value="summary") as request:
+            worker._summarize_current()
+
+        request.assert_called_once_with("inside one\ninside two")
+
+    def test_rolling_summary_can_overlap_the_previous_request(self):
+        buffer = TranscriptBuffer()
+        buffer.set_transcript(
+            "full transcript",
+            [
+                {
+                    "start": 0.0,
+                    "end": 100.0,
+                    "text": "first",
+                    "formatted_text": "first",
+                },
+                {
+                    "start": 200.0,
+                    "end": 300.0,
+                    "text": "second",
+                    "formatted_text": "second",
+                },
+            ],
+        )
+        worker = LlmWorker(LlmConfig(summary_interval_seconds=600), buffer)
+
+        with patch.object(worker, "_request_summary", return_value="summary") as request:
+            worker._summarize_current()
+            worker._summarize_current()
+
+        self.assertEqual(request.call_count, 2)
+        self.assertEqual(request.call_args_list[0].args, ("first\nsecond",))
+        self.assertEqual(request.call_args_list[1].args, ("first\nsecond",))
+
+    def test_final_summary_uses_full_transcript(self):
+        buffer = TranscriptBuffer()
+        buffer.set_transcript(
+            "full transcript",
+            [
+                {
+                    "start": 0.0,
+                    "end": 100.0,
+                    "text": "outside rolling window",
+                    "formatted_text": "outside rolling window",
+                },
+                {
+                    "start": 700.0,
+                    "end": 701.0,
+                    "text": "latest",
+                    "formatted_text": "latest",
+                },
+            ],
+        )
+        worker = LlmWorker(LlmConfig(summary_interval_seconds=600), buffer)
+
+        with patch.object(worker, "_request_summary", return_value="final summary") as request:
+            worker._summarize_current(final=True)
+
+        request.assert_called_once_with("full transcript")
 
     def test_transcript_buffer_is_replaceable_and_clearable(self):
         buffer = TranscriptBuffer()
@@ -105,6 +211,7 @@ class WorkerSupportTests(unittest.TestCase):
         self.assertEqual(buffer.snapshot(), "hello")
         buffer.clear()
         self.assertEqual(buffer.snapshot(), "")
+        self.assertEqual(buffer.segments_snapshot(), [])
 
     def test_llm_worker_reads_streamed_ndjson(self):
         class Response:
@@ -239,3 +346,28 @@ class WorkerSupportTests(unittest.TestCase):
             finally:
                 worker.stop()
                 worker.wait(2000)
+
+
+class ExportContentTests(unittest.TestCase):
+    def test_export_content_uses_full_transcript_buffer(self):
+        class Text:
+            def __init__(self, value):
+                self.value = value
+
+            def text(self):
+                return self.value
+
+            def toPlainText(self):
+                return self.value
+
+        window = MainWindow.__new__(MainWindow)
+        window.meeting_tag = Text("team sync")
+        window.summary_view = Text("summary")
+        window.transcript_view = Text("visible tail only")
+        window.buffer = TranscriptBuffer()
+        window.buffer.set("complete transcript\nincluding the earlier discussion")
+
+        content = window._export_content()
+
+        self.assertIn("complete transcript\nincluding the earlier discussion", content)
+        self.assertNotIn("visible tail only", content)

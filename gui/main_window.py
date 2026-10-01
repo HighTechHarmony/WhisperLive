@@ -660,7 +660,7 @@ class MainWindow(QMainWindow):
             "## Summaries\n\n"
             f"{self.summary_view.toPlainText().strip()}\n\n"
             "## Transcript\n\n"
-            f"{self.transcript_view.toPlainText().strip()}\n"
+            f"{self.buffer.snapshot().strip()}\n"
         )
 
     def closeEvent(self, event) -> None:

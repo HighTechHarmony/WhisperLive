@@ -29,3 +29,9 @@ absolute paths, then install it at `/etc/systemd/system/` and run:
 sudo systemctl daemon-reload
 sudo systemctl enable --now whisper-server.service
 ```
+
+The GUI retains and displays the complete transcript for the active meeting;
+`server.display_segments` does not limit that history. Automatic summaries and
+**Summarize Now** use the latest `llm.summary_interval_seconds` of transcript,
+with overlapping windows allowed. **Wrap & Export** generates its final summary
+from the complete meeting transcript and exports that complete transcript.

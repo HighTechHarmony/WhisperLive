@@ -56,6 +56,8 @@ class SttWorker(QThread):
         self._stop = threading.Event()
         self._reconnect = threading.Event()
         self._paused = threading.Event()
+        self._ignore_transcripts = threading.Event()
+        self._transcript_lock = threading.Lock()
         self._audio = queue.Queue()
         self._tc = None
         self._stream = None
@@ -77,9 +79,12 @@ class SttWorker(QThread):
             self._paused.clear()
 
     def clear_transcript(self) -> None:
-        self._segments.clear()
+        self._ignore_transcripts.set()
+        with self._transcript_lock:
+            self._segments.clear()
         self.buffer.clear()
         self.transcript_updated.emit("")
+        self.request_reconnect()
 
     def run(self) -> None:
         try:
@@ -175,10 +180,12 @@ class SttWorker(QThread):
             if self._reconnect.is_set():
                 self._reconnect.clear()
                 self._close_connection()
-                self._segments.clear()
+                with self._transcript_lock:
+                    self._segments.clear()
                 self.buffer.clear()
                 if not self._stop.is_set():
                     self._connect()
+                    self._ignore_transcripts.clear()
                 send_buffer = np.empty(0, dtype=np.int16)
                 continue
             if self._paused.is_set():
@@ -215,25 +222,31 @@ class SttWorker(QThread):
         self._tc.multicast_packet(np.clip(signal_block, -1.0, 1.0).astype(np.float32).tobytes())
 
     def _on_transcription(self, _text, segments) -> None:
-        for segment in segments:
-            start = float(segment.get("start", 0))
-            existing = next((item for item in self._segments if item["start"] == start), None)
-            clean = {
-                "start": start,
-                "end": float(segment.get("end", start)),
-                "text": str(segment.get("text", "")).strip(),
-                "completed": segment.get("completed", False),
-            }
-            if existing is None:
-                self._segments.append(clean)
-            else:
-                existing.update(clean)
-        lines = []
-        for segment in self._segments[-self.server_config.display_segments :]:
-            text = segment["text"]
-            if self.server_config.enable_timestamps:
-                text = f"[{segment['start']:.1f} -> {segment['end']:.1f}] {text}"
-            lines.append(text)
+        if self._ignore_transcripts.is_set():
+            return
+        with self._transcript_lock:
+            for segment in segments:
+                start = float(segment.get("start", 0))
+                existing = next(
+                    (item for item in self._segments if item["start"] == start),
+                    None,
+                )
+                clean = {
+                    "start": start,
+                    "end": float(segment.get("end", start)),
+                    "text": str(segment.get("text", "")).strip(),
+                    "completed": segment.get("completed", False),
+                }
+                if existing is None:
+                    self._segments.append(clean)
+                else:
+                    existing.update(clean)
+            lines = []
+            for segment in self._segments[-self.server_config.display_segments :]:
+                text = segment["text"]
+                if self.server_config.enable_timestamps:
+                    text = f"[{segment['start']:.1f} -> {segment['end']:.1f}] {text}"
+                lines.append(text)
         transcript = "\n".join(line for line in lines if line.strip())
         self.buffer.set(transcript)
         self.transcript_updated.emit(transcript)
@@ -284,8 +297,10 @@ class LlmWorker(QThread):
         self._auto_enabled.set()
         self._command_lock = threading.Lock()
         self._schedule_lock = threading.Lock()
+        self._duration_lock = threading.Lock()
         self._next_summary_at = time.monotonic() + self.config.summary_interval_seconds
         self._previous_text = ""
+        self._meeting_duration_seconds = 0.0
 
     def stop(self) -> None:
         self._stop.set()
@@ -313,6 +328,24 @@ class LlmWorker(QThread):
 
     def reset(self) -> None:
         self._previous_text = ""
+        self.set_meeting_duration(0.0)
+
+    def set_meeting_duration(self, seconds: float) -> None:
+        with self._duration_lock:
+            self._meeting_duration_seconds = max(0.0, float(seconds))
+
+    def meeting_duration_seconds(self) -> float:
+        with self._duration_lock:
+            return self._meeting_duration_seconds
+
+    def auto_summary_enabled(self) -> bool:
+        return self._auto_enabled.is_set()
+
+    def seconds_until_next_summary(self) -> float | None:
+        if not self.auto_summary_enabled():
+            return None
+        with self._schedule_lock:
+            return max(0.0, self._next_summary_at - time.monotonic())
 
     def _reset_interval(self) -> None:
         with self._schedule_lock:
@@ -378,12 +411,17 @@ class LlmWorker(QThread):
         self.summary_finished.emit(bool(summary))
 
     def _request_summary(self, text: str) -> str:
+        duration_seconds = int(self.meeting_duration_seconds())
+        duration_hours, remainder = divmod(duration_seconds, 3600)
+        duration_minutes = remainder // 60
+        meeting_duration = f"{duration_hours:02d}:{duration_minutes:02d}"
         payload = json.dumps(
             {
                 "model": self.config.model,
                 "prompt": (
                     "Summarize this live meeting transcript excerpt in concise bullet points. "
-                    "Cover topics, decisions, and action items without inventing details.\n\n"
+                    "Cover topics, decisions, and action items without inventing details. "
+                    f"The meeting had been in progress for {meeting_duration}.\n\n"
                     f"{text}"
                 ),
                 "stream": True,

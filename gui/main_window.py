@@ -45,6 +45,8 @@ class MainWindow(QMainWindow):
         self._last_llm_at = time.monotonic()
         self._llm_error = None
         self._server_start_failed = False
+        self._first_stt_at: float | None = None
+        self._last_summary_at: float | None = None
         self._exporting = False
         self._build_ui()
         self._connect_workers()
@@ -79,6 +81,15 @@ class MainWindow(QMainWindow):
             QStyle.StandardPixmap.SP_MessageBoxInformation,
             "LLM: waiting for summaries",
         )
+        self.meeting_timer = self._make_timer_button(
+            QStyle.StandardPixmap.SP_MediaPlay, "Meeting duration"
+        )
+        self.summary_timer = self._make_timer_button(
+            QStyle.StandardPixmap.SP_MessageBoxInformation, "Time since last summary"
+        )
+        self.autosummary_timer = self._make_timer_button(
+            QStyle.StandardPixmap.SP_BrowserReload, "Time until next autosummary"
+        )
         self.relink_button = self._make_tool_button(
             QStyle.StandardPixmap.SP_MediaVolume, "Re-link Audio"
         )
@@ -87,11 +98,17 @@ class MainWindow(QMainWindow):
         audio_panel.setSpacing(4)
         audio_panel.addWidget(self.relink_button, alignment=Qt.AlignmentFlag.AlignCenter)
         audio_panel.addWidget(self.audio_target)
-        for widget in (self.server_status, self.stt_age, self.llm_age):
+        for widget in (
+            self.server_status,
+            self.stt_age,
+            self.llm_age,
+            self.meeting_timer,
+            self.summary_timer,
+            self.autosummary_timer,
+        ):
             header.addWidget(widget)
         header.addLayout(audio_panel)
         header.addStretch(1)
-        header.addWidget(self.relink_button)
         layout.addLayout(header)
 
         controls = QHBoxLayout()
@@ -126,6 +143,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(controls)
         self._update_toggle_style(self.listen_button, True)
         self._update_toggle_style(self.auto_summary_button, True)
+        if self.llm_worker is None:
+            self.autosummary_timer.hide()
 
         splitter = QSplitter()
         self.transcript_view = self._make_text_view("Live STT")
@@ -160,6 +179,14 @@ class MainWindow(QMainWindow):
             QToolButton#statusIndicator, QToolButton#toolButton {
                 background: #1a242b; border: 1px solid #31414a; border-radius: 18px;
                 color: #dce6ed; }
+            QToolButton#timerIndicator {
+                min-width: 124px; max-width: 124px; min-height: 36px;
+                background: #1a242b; border: 1px solid #31414a; border-radius: 6px;
+                color: #dce6ed; font-family: monospace; font-size: 11px; }
+            QToolButton#timerIndicator:hover {
+                background: #25343d; border-color: #4d7f8c; }
+            QToolButton#timerIndicator[status="warning"] {
+                background: #4a3a1f; border-color: #b58b42; }
             QToolButton#statusIndicator:hover, QToolButton#toolButton:hover {
                 background: #25343d; border-color: #4d7f8c; }
             QToolButton#statusIndicator[status="ok"] {
@@ -196,6 +223,20 @@ class MainWindow(QMainWindow):
     def _make_status_button(self, icon: QStyle.StandardPixmap, tooltip: str) -> QToolButton:
         button = self._make_tool_button(icon, tooltip)
         button.setObjectName("statusIndicator")
+        return button
+
+    @staticmethod
+    def _make_timer_button(icon: QStyle.StandardPixmap, tooltip: str) -> QToolButton:
+        button = QToolButton()
+        button.setObjectName("timerIndicator")
+        button.setAutoRaise(True)
+        button.setFixedSize(124, 36)
+        button.setIconSize(QSize(18, 18))
+        button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        button.setText("--:--:--")
+        button.setIcon(MainWindow._colored_icon(button, icon, "#8dd7e5"))
+        button.setToolTip(tooltip)
+        button.setAccessibleName(tooltip)
         return button
 
     @staticmethod
@@ -329,11 +370,78 @@ class MainWindow(QMainWindow):
                 f"LLM last updated {llm_age}",
                 "ok" if time.monotonic() - self._last_llm_at < 10 else "warning",
             )
+        self._update_timer_displays()
 
     @staticmethod
     def _age(timestamp: float) -> str:
         seconds = max(0, int(time.monotonic() - timestamp))
         return f"{seconds}s ago"
+
+    @staticmethod
+    def _format_stopwatch(seconds: float) -> str:
+        total = max(0, int(seconds))
+        hours, remainder = divmod(total, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+    def _set_timer_display(
+        self, button: QToolButton, value: str, tooltip: str, state: str = "info"
+    ) -> None:
+        button.setText(value)
+        button.setToolTip(tooltip)
+        button.setStatusTip(tooltip)
+        button.setProperty("status", state)
+        button.style().unpolish(button)
+        button.style().polish(button)
+        button.update()
+
+    def _update_timer_displays(self) -> None:
+        now = time.monotonic()
+        if self._first_stt_at is None:
+            self._set_timer_display(
+                self.meeting_timer,
+                "--:--:--",
+                "Meeting duration: waiting for the first STT content",
+            )
+        else:
+            duration = self._format_stopwatch(now - self._first_stt_at)
+            self._set_timer_display(
+                self.meeting_timer,
+                duration,
+                f"Meeting duration since first STT content: {duration}",
+                "ok",
+            )
+
+        if self._last_summary_at is None:
+            self._set_timer_display(
+                self.summary_timer,
+                "--:--:--",
+                "Time since last summary: no summary generated yet",
+            )
+        else:
+            elapsed = self._format_stopwatch(now - self._last_summary_at)
+            self._set_timer_display(
+                self.summary_timer,
+                elapsed,
+                f"Time since last summary: {elapsed}",
+                "ok" if now - self._last_summary_at < 10 else "warning",
+            )
+
+        if self.llm_worker is None or not self.llm_worker.auto_summary_enabled():
+            self.autosummary_timer.hide()
+            return
+        remaining = self.llm_worker.seconds_until_next_summary()
+        if remaining is None:
+            self.autosummary_timer.hide()
+            return
+        countdown = self._format_stopwatch(remaining)
+        self.autosummary_timer.show()
+        self._set_timer_display(
+            self.autosummary_timer,
+            countdown,
+            f"Time until next autosummary: {countdown}",
+            "warning" if remaining <= 10 else "info",
+        )
 
     def _on_stt_status(self, status: str) -> None:
         state = {"Listening": "ok", "Connecting": "info", "Stopped": "warning"}.get(
@@ -351,7 +459,12 @@ class MainWindow(QMainWindow):
     def _on_transcript(self, text: str) -> None:
         if self._updates_suspended:
             return
-        self._last_stt_at = time.monotonic()
+        now = time.monotonic()
+        self._last_stt_at = now
+        if self._first_stt_at is None and text.strip():
+            self._first_stt_at = now
+        if text.strip():
+            self._update_meeting_duration()
         self._replace_view(self.transcript_view, text)
 
     def _on_summary(self, text: str) -> None:
@@ -359,6 +472,8 @@ class MainWindow(QMainWindow):
             return
         self._llm_error = None
         self._last_llm_at = time.monotonic()
+        self._last_summary_at = self._last_llm_at
+        self._update_meeting_duration()
         self._set_status(self.llm_age, "LLM summary updated", "ok")
         current = self.summary_view.toPlainText().strip()
         combined = f"{current}\n\n{text}" if current else text
@@ -376,12 +491,15 @@ class MainWindow(QMainWindow):
             return
         self.summarize_button.setEnabled(False)
         self._set_status(self.llm_age, "LLM summary in progress", "info")
+        self._update_meeting_duration()
         self.llm_worker.request_summary()
 
     def _on_final_summary(self, text: str) -> None:
         if text:
             self._llm_error = None
             self._last_llm_at = time.monotonic()
+            self._last_summary_at = self._last_llm_at
+            self._update_meeting_duration()
             self._set_status(self.llm_age, "Final LLM summary generated", "ok")
             current = self.summary_view.toPlainText().strip()
             combined = f"{current}\n\n{text}" if current else text
@@ -428,6 +546,11 @@ class MainWindow(QMainWindow):
         self._update_toggle_style(self.auto_summary_button, checked)
         if self.llm_worker is not None:
             self.llm_worker.set_auto_enabled(checked)
+        self._update_timer_displays()
+
+    def _update_meeting_duration(self) -> None:
+        if self.llm_worker is not None and self._first_stt_at is not None:
+            self.llm_worker.set_meeting_duration(time.monotonic() - self._first_stt_at)
 
     @staticmethod
     def _update_toggle_style(button: QPushButton, checked: bool) -> None:
@@ -441,12 +564,16 @@ class MainWindow(QMainWindow):
         if self.llm_worker is not None:
             self.llm_worker.reset()
         self._last_stt_at = time.monotonic()
+        self._first_stt_at = None
+        self._update_timer_displays()
 
     def _clear_summaries(self) -> None:
         self.summary_view.clear()
         self._llm_error = None
         self._last_llm_at = time.monotonic()
+        self._last_summary_at = None
         self._set_status(self.llm_age, "LLM summaries cleared", "info")
+        self._update_timer_displays()
 
     def _on_worker_error(self, message: str) -> None:
         self._set_status(
@@ -468,6 +595,7 @@ class MainWindow(QMainWindow):
         self.export_button.setEnabled(False)
         if self.llm_worker is not None:
             self._set_status(self.llm_age, "Finalizing LLM summary before export", "info")
+            self._update_meeting_duration()
             self.llm_worker.request_final_summary()
             return
         self._finish_export()
@@ -500,7 +628,10 @@ class MainWindow(QMainWindow):
             now = time.monotonic()
             self._last_stt_at = now
             self._last_llm_at = now
+            self._first_stt_at = None
+            self._last_summary_at = None
             self._set_status(self.server_status, f"Meeting exported to {path}", "ok")
+            self._update_timer_displays()
         except (OSError, ValueError, KeyError) as exc:
             if temporary is not None:
                 try:

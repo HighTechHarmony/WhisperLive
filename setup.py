@@ -44,12 +44,15 @@ setup(
             "whisper-finetuning"
         )
     ),
+    package_data={"whisper_live.summarizer_templates": ["SUMMARIZER_TEMPLATE-*.md"]},
     install_requires=[
         "PyAudio",
         "av",
         "faster-whisper==1.2.0",
-        "torch",
-        "torchaudio",
+        "torch==2.11.0+cu128; sys_platform == 'linux' and python_version >= '3.10'",
+        "torchaudio==2.11.0+cu128; sys_platform == 'linux' and python_version >= '3.10'",
+        "torch; sys_platform != 'linux' or python_version < '3.10'",
+        "torchaudio; sys_platform != 'linux' or python_version < '3.10'",
         "websockets",
         "onnxruntime>=1.17.0,<1.20.0; python_version < '3.10'",
         "onnxruntime>=1.20.0,<2; python_version >= '3.10'",
@@ -70,13 +73,13 @@ setup(
         "fastapi",
         "uvicorn",
         "python-multipart",
-        # CTranslate2 (faster-whisper's backend) is hard-linked against
-        # libcublas.so.12 / libcudnn.so.9 but doesn't declare the matching
-        # wheels as runtime deps. torch >=2.12 also dropped the cu12
-        # wheels in favor of cu13, so users no longer get cu12 transitively.
-        # Without these wheels GPU inference dies at first transcription:
+        # CTranslate2 (faster-whisper's backend) uses CUDA 12/cuDNN 9 but
+        # doesn't declare the matching wheels as runtime dependencies.
+        # PyTorch's default PyPI wheel is CUDA 13; the cu128 build above keeps
+        # its NCCL library compatible with CTranslate2's CUDA 12 libraries.
+        # Without these CUDA 12 wheels GPU inference dies at first transcription:
         #   ERROR: Library libcublas.so.12 is not found or cannot be loaded
-        # Skip only for CPU-only inference.
+        # Keep them installed so this environment can switch between CPU and GPU.
         "nvidia-cublas-cu12; sys_platform == 'linux'",
         "nvidia-cudnn-cu12; sys_platform == 'linux'",
     ],

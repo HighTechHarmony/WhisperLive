@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QComboBox,
     QStyle,
     QSplitter,
     QToolButton,
@@ -30,6 +31,7 @@ from .config import AppConfig
 from .pipewire import PipeWireError, PipeWireRouter
 from .systemd import service_is_active, start_service
 from .workers import LlmWorker, SttWorker, TranscriptBuffer
+from whisper_live.summarizer import discover_summary_templates, resolve_summary_template
 
 
 class MainWindow(QMainWindow):
@@ -127,6 +129,38 @@ class MainWindow(QMainWindow):
         self.summarize_button.setObjectName("primaryButton")
         self.summarize_button.setEnabled(self.llm_worker is not None)
         self.summarize_button.clicked.connect(self._summarize_now)
+        self.summary_template_combo = QComboBox()
+        self.summary_template_combo.setToolTip(
+            "Select automatic default, no group template, or a group template."
+        )
+        template_filenames = discover_summary_templates()
+        automatic_template = resolve_summary_template()
+        automatic_label = "Automatic"
+        if automatic_template is None:
+            automatic_label += " (none)"
+        else:
+            automatic_label += f" ({self._template_group(automatic_template)})"
+        self.summary_template_combo.addItem(automatic_label, "auto")
+        self.summary_template_combo.addItem("None", "none")
+        for filename in template_filenames:
+            label = self._template_group(filename)
+            if filename == automatic_template:
+                label += " (default)"
+            self.summary_template_combo.addItem(label, filename)
+        self.summary_template_combo.setEnabled(self.llm_worker is not None)
+        configured_template = self.config.llm.summary_template
+        if configured_template.casefold() in {"auto", "automatic"}:
+            configured_template = "auto"
+        elif configured_template.casefold() == "none":
+            configured_template = "none"
+        selected_index = self.summary_template_combo.findData(configured_template)
+        self.summary_template_combo.setCurrentIndex(max(0, selected_index))
+        self._active_summary_template = self.summary_template_combo.itemData(
+            self.summary_template_combo.currentIndex()
+        )
+        self.summary_template_combo.currentIndexChanged.connect(
+            self._on_summary_template_changed
+        )
         self.clear_transcript_button = QPushButton("Clear Transcript")
         self.clear_transcript_button.clicked.connect(self._clear_transcript)
         self.clear_summaries_button = QPushButton("Clear Summaries")
@@ -139,6 +173,8 @@ class MainWindow(QMainWindow):
             self.clear_summaries_button,
         ):
             controls.addWidget(widget)
+        controls.addWidget(QLabel("Template"))
+        controls.addWidget(self.summary_template_combo)
         controls.addStretch(1)
         layout.addLayout(controls)
         self._update_toggle_style(self.listen_button, True)
@@ -547,6 +583,27 @@ class MainWindow(QMainWindow):
         if self.llm_worker is not None:
             self.llm_worker.set_auto_enabled(checked)
         self._update_timer_displays()
+
+    @staticmethod
+    def _template_group(filename: str) -> str:
+        return filename[len("SUMMARIZER_TEMPLATE-") : -len(".md")]
+
+    def _on_summary_template_changed(self, index: int) -> None:
+        if self.llm_worker is None:
+            return
+        selection = self.summary_template_combo.itemData(index)
+        try:
+            self.llm_worker.set_summary_template(selection)
+        except ValueError as exc:
+            self._set_status(self.llm_age, f"Template error: {exc}", "error")
+            self.summary_template_combo.blockSignals(True)
+            self.summary_template_combo.setCurrentIndex(
+                self.summary_template_combo.findData(self._active_summary_template)
+            )
+            self.summary_template_combo.blockSignals(False)
+            return
+        self._active_summary_template = selection
+        self._set_status(self.llm_age, f"Summary template: {selection}", "info")
 
     def _update_meeting_duration(self) -> None:
         if self.llm_worker is not None and self._first_stt_at is not None:

@@ -73,6 +73,7 @@ from whisper_live.summarizer import (
     DEFAULT_MODEL as AUTO_SUMMARY_MODEL,
     DEFAULT_URL as AUTO_SUMMARY_URL,
     AutoSummarizer,
+    build_system_prompt,
     parse_interval_minutes,
 )
 
@@ -739,6 +740,7 @@ class CaptureSession:
             url=self.args.auto_summary_url,
             output_dir=self.summary_dir,
             base_timestamp=self.session_timestamp,
+            summary_template=self.args.auto_summary_template,
         )
         self.summarizer.start()
         print(
@@ -871,6 +873,12 @@ def _parse_args(argv=None):
         help=f"Base URL of the Ollama server (default: {AUTO_SUMMARY_URL}).",
     )
     parser.add_argument(
+        "--auto-summary-template",
+        default="auto",
+        help="Summarizer template: auto, none, or an exact filename from "
+        "whisper_live/summarizer_templates/.",
+    )
+    parser.add_argument(
         "--n-display-segments",
         "--n_display_segments",
         type=int,
@@ -930,6 +938,11 @@ def _parse_args(argv=None):
         parser.error(str(exc))
     if args.enable_summaries:
         args.output_srt = True  # summaries need the transcript
+        if args.auto_summary_minutes is not None:
+            try:
+                build_system_prompt(template=args.auto_summary_template)
+            except ValueError as exc:
+                parser.error(str(exc))
     return args
 
 

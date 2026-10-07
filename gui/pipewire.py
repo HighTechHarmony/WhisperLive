@@ -49,7 +49,8 @@ class PipeWireRouter:
         return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
     def input_ports(self) -> list[str]:
-        return [port for port in self._ports("-i") if self.node_name in port]
+        node_name = self.node_name.lower()
+        return [port for port in self._ports("-i") if node_name in port.lower()]
 
     def output_ports(self) -> list[str]:
         return self._ports("-o")

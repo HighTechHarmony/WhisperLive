@@ -49,8 +49,10 @@ from whisper_live.summarizer import (
     DEFAULT_REQUEST_TIMEOUT,
     DEFAULT_URL,
     AutoSummarizer,
+    discover_summary_templates,
     format_offset,
     parse_interval_minutes,
+    resolve_summary_template,
 )
 
 # Last-resort values, used only when live_poc.py cannot be read. Ordinarily both
@@ -394,6 +396,7 @@ def process(path, args):
         base_timestamp=args.timestamp or _safe_stem(path),
         prompt=args.prompt,
         request_timeout=args.timeout,
+        summary_template=args.summary_template,
     )
     worker = _worker(summarizer)
 
@@ -463,7 +466,7 @@ def _parse_args(argv=None):
     )
     parser.add_argument(
         "transcripts",
-        nargs="+",
+        nargs="*",
         metavar="TRANSCRIPT.srt",
         help="One or more .srt (or .vtt) files to summarize.",
     )
@@ -503,8 +506,19 @@ def _parse_args(argv=None):
     parser.add_argument(
         "--prompt-file",
         default=None,
-        help="Read the instruction prefix sent before each excerpt from this "
-        "file instead of the built-in meeting-summary prompt.",
+        help="Use this file as the complete system prompt instead of the "
+        "selected summary template.",
+    )
+    parser.add_argument(
+        "--summary-template",
+        default="auto",
+        help="Group template: auto, none, or an exact filename from "
+        "whisper_live/summarizer_templates/.",
+    )
+    parser.add_argument(
+        "--list-summary-templates",
+        action="store_true",
+        help="List available templates and the automatic default, then exit.",
     )
     parser.add_argument(
         "--timeout",
@@ -523,6 +537,10 @@ def _parse_args(argv=None):
     args = parser.parse_args(argv)
     args.defaults_origin = origin
     args.live_poc_error = error
+    if args.list_summary_templates:
+        return args
+    if not args.transcripts:
+        parser.error("provide at least one transcript, or use --list-summary-templates")
     if args.timeout <= 0:
         parser.error("--timeout must be > 0")
     args.prompt = None
@@ -534,11 +552,21 @@ def _parse_args(argv=None):
             parser.error(f"could not read --prompt-file: {exc}")
         if not args.prompt.strip():
             parser.error(f"--prompt-file {args.prompt_file} is empty")
+    else:
+        try:
+            resolve_summary_template(args.summary_template)
+        except ValueError as exc:
+            parser.error(str(exc))
     return args
 
 
 def main(argv=None):
     args = _parse_args(argv)
+    if args.list_summary_templates:
+        print(f"Automatic default: {resolve_summary_template() or 'none'}")
+        for filename in discover_summary_templates():
+            print(filename)
+        return 0
     if args.live_poc_error:
         print(
             f"[!] Could not read the live configuration from live_poc.py "

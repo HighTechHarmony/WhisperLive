@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=scott
 WorkingDirectory=/home/scott/dev/WhisperLive
-ExecStart=/home/scott/dev/WhisperLive/whisper_env/bin/python /home/scott/dev/WhisperLive/run_server.py --max_connection_time=0 --device cpu --port 9090 --backend faster_whisper --max_clients 4 --enable_rest --cors-origins=http://localhost:8080,http://127.0.0.1:8080
+ExecStart=/home/scott/dev/WhisperLive/whisper_env/bin/python /home/scott/dev/WhisperLive/run_server.py --config /home/scott/dev/WhisperLive/config.toml --max_connection_time=0 --port 9090 --backend faster_whisper --max_clients 4 --enable_rest --cors-origins=http://localhost:8080,http://127.0.0.1:8080
 Restart=on-failure
 RestartSec=5
 

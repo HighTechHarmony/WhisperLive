@@ -15,24 +15,78 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 import time
 import urllib.request
+from importlib import resources
 from typing import Optional
 
 DEFAULT_MODEL = "ornith-1.5:9b"
 DEFAULT_URL = "http://ollama:11434"
 DEFAULT_REQUEST_TIMEOUT = 300.0
+TEMPLATE_DIRECTORY = "summarizer_templates"
+TEMPLATE_PREFIX = "SUMMARIZER_TEMPLATE-"
 
-DEFAULT_PROMPT = (
-    "You are an assistant that summarizes live meeting transcripts. "
-    "Summarize the excerpt below in a few concise bullet points covering the "
-    "main topics, decisions and action items. Only use information present in "
-    "the excerpt; do not invent details. The transcript may contain swearing, "
-    "profanity or other informal language: tolerate it quietly and write the "
-    "summary in a professional tone. Do not comment on, quote or draw attention "
-    "to the language used.\n\n"
-)
+
+def discover_summary_templates(template_directory=None):
+    """Return matching template filenames in deterministic display order."""
+    directory = template_directory
+    if directory is None:
+        directory = resources.files(__package__).joinpath(TEMPLATE_DIRECTORY)
+    try:
+        entries = directory.iterdir()
+        filenames = [
+            entry.name
+            for entry in entries
+            if entry.is_file()
+            and re.fullmatch(r"SUMMARIZER_TEMPLATE-.+\.md", entry.name)
+        ]
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    return sorted(filenames, key=lambda filename: (filename.casefold(), filename))
+
+
+def resolve_summary_template(template=None, template_directory=None):
+    """Resolve ``None``/``auto``, ``none``, or an exact discovered filename."""
+    filenames = discover_summary_templates(template_directory)
+    selection = "auto" if template is None else str(template)
+    if selection.casefold() in {"auto", "automatic"}:
+        return next(
+            (filename for filename in filenames if "default" in filename.casefold()),
+            None,
+        )
+    if selection.casefold() == "none":
+        return None
+    if selection in filenames:
+        return selection
+    available = ", ".join(filenames) if filenames else "none found"
+    raise ValueError(
+        f"Unknown summarizer template {selection!r}; choose 'auto', 'none', or "
+        f"one of: {available}. Templates must be named "
+        f"{TEMPLATE_PREFIX}<group name>.md in {TEMPLATE_DIRECTORY}/."
+    )
+
+
+def build_system_prompt(prompt=None, template=None, template_directory=None):
+    """Return an explicit prompt or the selected template contents."""
+    if prompt is not None:
+        return prompt.strip()
+
+    filename = resolve_summary_template(template, template_directory)
+    if filename is None:
+        return ""
+
+    directory = template_directory
+    if directory is None:
+        directory = resources.files(__package__).joinpath(TEMPLATE_DIRECTORY)
+    try:
+        template_text = directory.joinpath(filename).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(
+            f"Could not read summarizer template {filename!r}: {exc}"
+        ) from exc
+    return re.sub(r"<!--.*?-->", "", template_text, flags=re.DOTALL).strip()
 
 _DISABLED_WORDS = {"0", "false", "off", "no", "none", "disable", "disabled", ""}
 
@@ -105,9 +159,12 @@ class AutoSummarizer:
         output_dir (str): Directory the summary files are written to.
         base_timestamp (str, optional): Shared timestamp (``YYYYMMDD_HHMMSS``)
             used in every filename for this session. Defaults to "now".
-        prompt (str, optional): Instruction prefix sent before the transcript.
+        prompt (str, optional): Complete system-prompt override. When provided,
+            it replaces the selected group template.
         request_timeout (float, optional): HTTP timeout for a single summary
             request, in seconds.
+        summary_template (str, optional): ``auto``, ``none``, or a discovered
+            template filename. ``None`` selects automatically.
 
     Each block is summarized independently in arrival order (non-overlapping):
     only text that arrived since the previous summary is included.  The final,
@@ -124,6 +181,7 @@ class AutoSummarizer:
         base_timestamp=None,
         prompt=None,
         request_timeout=DEFAULT_REQUEST_TIMEOUT,
+        summary_template=None,
     ):
         self.client = client
         self.interval_seconds = float(interval_minutes) * 60.0
@@ -133,7 +191,9 @@ class AutoSummarizer:
         self.base_timestamp = base_timestamp or time.strftime(
             "%Y%m%d_%H%M%S", time.localtime()
         )
-        self.prompt = prompt or DEFAULT_PROMPT
+        self.prompt = prompt
+        self.summary_template = summary_template
+        self.system_prompt = build_system_prompt(prompt, summary_template)
         self.request_timeout = request_timeout
 
         self._index = 0  # number of transcript segments already summarized
@@ -233,12 +293,16 @@ class AutoSummarizer:
         long generation; ``request_timeout`` only bounds a genuine stall.
         """
         prompt = (
-            f"{self.prompt}"
             f"Transcript excerpt, {format_offset(start)} to {format_offset(end)}:\n\n"
             f"{text}\n"
         )
         payload = json.dumps(
-            {"model": self.model, "prompt": prompt, "stream": True}
+            {
+                "model": self.model,
+                "system": self.system_prompt,
+                "prompt": prompt,
+                "stream": True,
+            }
         ).encode("utf-8")
         request = urllib.request.Request(
             f"{self.url}/api/generate",

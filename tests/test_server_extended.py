@@ -990,17 +990,17 @@ class TestRestModelSelection(unittest.TestCase):
         self.assertEqual(mock_model_cls.call_count, 2)
         self.assertEqual(set(self.server.rest_models), {"small", "medium"})
 
-    @patch("whisper_live.server.torch.cuda.is_available", return_value=True)
-    @patch("whisper_live.server.torch.cuda.get_device_capability", return_value=(6, 1))
+    @patch("whisper_live.server.faster_whisper_compute_type", return_value="float32")
+    @patch("whisper_live.server.resolve_faster_whisper_device", return_value="cuda")
     @patch("whisper_live.server.WhisperModel")
-    def test_pascal_cuda_uses_float32(self, mock_model_cls, mock_capability, mock_cuda_available):
+    def test_pascal_cuda_uses_float32(self, mock_model_cls, mock_device, mock_compute_type):
         self.server._get_rest_model("small")
         self.assertEqual(mock_model_cls.call_args.kwargs["compute_type"], "float32")
 
-    @patch("whisper_live.server.torch.cuda.is_available", return_value=True)
-    @patch("whisper_live.server.torch.cuda.get_device_capability", return_value=(8, 0))
+    @patch("whisper_live.server.faster_whisper_compute_type", return_value="float16")
+    @patch("whisper_live.server.resolve_faster_whisper_device", return_value="cuda")
     @patch("whisper_live.server.WhisperModel")
-    def test_non_pascal_cuda_uses_float16(self, mock_model_cls, mock_capability, mock_cuda_available):
+    def test_non_pascal_cuda_uses_float16(self, mock_model_cls, mock_device, mock_compute_type):
         self.server._get_rest_model("small")
         self.assertEqual(mock_model_cls.call_args.kwargs["compute_type"], "float16")
 

@@ -8,6 +8,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from whisper_live.summarizer import resolve_summary_template
+
 
 @dataclass(frozen=True)
 class AudioConfig:
@@ -55,6 +57,7 @@ class LlmConfig:
     model: str = "ornith-1.5:9b"
     summary_interval_seconds: float = 600.0
     request_timeout: float = 300.0
+    summary_template: str = "auto"
 
 
 @dataclass(frozen=True)
@@ -89,6 +92,8 @@ def _validate(config: AppConfig) -> AppConfig:
         raise ValueError("audio.gain must be positive")
     if config.server.port < 1 or config.server.port > 65535:
         raise ValueError("server.port must be between 1 and 65535")
+    if config.server.device not in {"auto", "cuda", "cpu"}:
+        raise ValueError("server.device must be 'auto', 'cuda', or 'cpu'")
     if config.server.display_segments < 1:
         raise ValueError("server.display_segments must be positive")
     if config.server.max_clients < 1:
@@ -97,6 +102,8 @@ def _validate(config: AppConfig) -> AppConfig:
         raise ValueError("server.rest_port must be between 1 and 65535")
     if config.llm.enabled and config.llm.summary_interval_seconds <= 0:
         raise ValueError("llm.summary_interval_seconds must be positive when enabled")
+    if config.llm.enabled:
+        resolve_summary_template(config.llm.summary_template)
     if config.export.filename_template == "":
         raise ValueError("export.filename_template must not be empty")
     fields = set(re.findall(r"\{([^{}]+)\}", config.export.filename_template))

@@ -15,7 +15,7 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from scipy.signal import resample_poly
 
 from whisper_live.client import Client, TranscriptionClient
-from whisper_live.summarizer import strip_reasoning
+from whisper_live.summarizer import build_system_prompt, strip_reasoning
 
 from .config import AudioConfig, LlmConfig, ServerConfig
 from .pipewire import configure_pipewire_node
@@ -318,6 +318,9 @@ class LlmWorker(QThread):
         self._command_lock = threading.Lock()
         self._schedule_lock = threading.Lock()
         self._duration_lock = threading.Lock()
+        self._prompt_lock = threading.Lock()
+        self._summary_template = config.summary_template
+        self._system_prompt = build_system_prompt(template=self._summary_template)
         self._next_summary_at = time.monotonic() + self.config.summary_interval_seconds
         self._meeting_duration_seconds = 0.0
 
@@ -351,6 +354,12 @@ class LlmWorker(QThread):
     def set_meeting_duration(self, seconds: float) -> None:
         with self._duration_lock:
             self._meeting_duration_seconds = max(0.0, float(seconds))
+
+    def set_summary_template(self, template: str) -> None:
+        system_prompt = build_system_prompt(template=template)
+        with self._prompt_lock:
+            self._summary_template = template
+            self._system_prompt = system_prompt
 
     def meeting_duration_seconds(self) -> float:
         with self._duration_lock:
@@ -448,6 +457,8 @@ class LlmWorker(QThread):
         return "\n".join(lines)
 
     def _request_summary(self, text: str) -> str:
+        with self._prompt_lock:
+            system_prompt = self._system_prompt
         duration_seconds = int(self.meeting_duration_seconds())
         duration_hours, remainder = divmod(duration_seconds, 3600)
         duration_minutes = remainder // 60
@@ -455,6 +466,7 @@ class LlmWorker(QThread):
         payload = json.dumps(
             {
                 "model": self.config.model,
+                "system": system_prompt,
                 "prompt": (
                     "Summarize this live meeting transcript excerpt in concise bullet points. "
                     "Cover topics, decisions, and action items without inventing details. "

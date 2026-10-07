@@ -10,8 +10,25 @@ import shutil
 import json
 from starlette.responses import PlainTextResponse, JSONResponse
 
+
+def resolve_server_device(config_path=None, cli_device=None):
+    if cli_device is not None:
+        return cli_device
+    if config_path is None:
+        return "auto"
+    from gui.config import load_config
+
+    return load_config(config_path).server.device
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Application TOML file used for server settings such as device.",
+    )
     parser.add_argument('--port', '-p',
                         type=int,
                         default=9090,
@@ -23,7 +40,7 @@ if __name__ == "__main__":
     parser.add_argument('--device',
                         type=str,
                         choices=['auto', 'cuda', 'cpu'],
-                        default='auto',
+                        default=None,
                         help="Device for transcription: 'auto' (CUDA when available, "
                              "otherwise CPU), 'cuda', or 'cpu'. Use 'cpu' to run "
                              "without a GPU.")
@@ -124,6 +141,11 @@ if __name__ == "__main__":
         help='Maximum REST API requests per minute per client IP. 0 = unlimited (default).'
     )
     args = parser.parse_args()
+
+    try:
+        args.device = resolve_server_device(args.config, args.device)
+    except (OSError, TypeError, ValueError) as exc:
+        parser.error(str(exc))
 
     if args.backend == "tensorrt":
         if args.trt_model_path is None:

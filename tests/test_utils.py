@@ -4,7 +4,35 @@ import unittest
 from io import StringIO
 from unittest.mock import patch
 
-from whisper_live.utils import format_time, create_srt_file, print_transcript, clear_screen
+from whisper_live.utils import (
+    clear_screen,
+    create_srt_file,
+    faster_whisper_compute_type,
+    format_time,
+    print_transcript,
+    resolve_faster_whisper_device,
+)
+
+
+class TestFasterWhisperDeviceSelection(unittest.TestCase):
+    @patch("ctranslate2.get_cuda_device_count", return_value=1)
+    def test_auto_uses_c_translate2_cuda_availability(self, mock_device_count):
+        self.assertEqual(resolve_faster_whisper_device("auto"), "cuda")
+
+    @patch("ctranslate2.get_cuda_device_count", return_value=0)
+    def test_cuda_falls_back_to_cpu_when_unavailable(self, mock_device_count):
+        self.assertEqual(resolve_faster_whisper_device("cuda"), "cpu")
+
+    @patch("ctranslate2.get_supported_compute_types", return_value={"float32", "int8"})
+    def test_uses_float32_when_gpu_does_not_support_float16(self, mock_compute_types):
+        self.assertEqual(faster_whisper_compute_type("cuda"), "float32")
+
+    @patch(
+        "ctranslate2.get_supported_compute_types",
+        return_value={"float16", "float32", "int8"},
+    )
+    def test_uses_float16_when_gpu_supports_it(self, mock_compute_types):
+        self.assertEqual(faster_whisper_compute_type("cuda"), "float16")
 
 
 class TestFormatTime(unittest.TestCase):

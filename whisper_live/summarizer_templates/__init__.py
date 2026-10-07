@@ -1,0 +1,1 @@
+"""Bundled group-specific summarizer templates."""

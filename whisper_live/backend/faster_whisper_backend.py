@@ -89,7 +89,7 @@ class ServeClientFasterWhisper(ServeClientBase):
         self.vad_parameters = vad_parameters or {"threshold": 0.5}
         self.hotwords = hotwords
 
-        device = utils.resolve_device(device)
+        device = utils.resolve_faster_whisper_device(device)
         self.compute_type = utils.faster_whisper_compute_type(device)
 
         if self.model_size_or_path is None:

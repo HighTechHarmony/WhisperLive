@@ -124,11 +124,28 @@ def resolve_device(device="auto"):
     raise ValueError(f"Unknown device {device!r}; expected 'auto', 'cuda' or 'cpu'.")
 
 
+def resolve_faster_whisper_device(device="auto"):
+    """Resolve a device preference using CTranslate2's CUDA runtime."""
+    import ctranslate2
+
+    if device == "cpu":
+        return "cpu"
+    if device in (None, "auto"):
+        return "cuda" if ctranslate2.get_cuda_device_count() else "cpu"
+    if device == "cuda":
+        if ctranslate2.get_cuda_device_count():
+            return "cuda"
+        logging.warning("Device 'cuda' requested but CTranslate2 CUDA is unavailable; using CPU.")
+        return "cpu"
+    raise ValueError(f"Unknown device {device!r}; expected 'auto', 'cuda' or 'cpu'.")
+
+
 def faster_whisper_compute_type(device):
     """Return the faster-whisper compute type for a resolved device string."""
     if device != "cuda":
         return "int8"
-    import torch
 
-    major, _ = torch.cuda.get_device_capability()
-    return "float16" if major >= 7 else "float32"
+    import ctranslate2
+
+    supported_types = ctranslate2.get_supported_compute_types("cuda")
+    return "float16" if "float16" in supported_types else "float32"

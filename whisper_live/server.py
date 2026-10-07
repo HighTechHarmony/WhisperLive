@@ -19,7 +19,6 @@ from fastapi.responses import JSONResponse
 from starlette.responses import PlainTextResponse, StreamingResponse
 import uvicorn
 from faster_whisper import WhisperModel
-import torch
 
 from enum import Enum
 
@@ -29,7 +28,7 @@ from websockets.sync.server import serve
 from websockets.exceptions import ConnectionClosed
 from whisper_live.vad import VoiceActivityDetector
 from whisper_live.backend.base import ServeClientBase
-from whisper_live.utils import resolve_device
+from whisper_live.utils import faster_whisper_compute_type, resolve_faster_whisper_device
 
 logging.basicConfig(level=logging.INFO)
 
@@ -695,12 +694,8 @@ class TranscriptionServer:
         with self.rest_models_lock:
             transcriber = self.rest_models.get(model_name)
             if transcriber is None:
-                device = resolve_device(self.rest_device)
-                if device == "cuda":
-                    major, _ = torch.cuda.get_device_capability()                    
-                    compute_type = "float16" if major >= 7 else "float32"
-                else:
-                    compute_type = "int8"
+                device = resolve_faster_whisper_device(self.rest_device)
+                compute_type = faster_whisper_compute_type(device)
                 logging.info(f"Loading REST model '{model_name}' on {device} with {compute_type}")
                 transcriber = WhisperModel(model_name, device=device, compute_type=compute_type)
                 self.rest_models[model_name] = transcriber

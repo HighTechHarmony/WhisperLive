@@ -46,6 +46,9 @@ model = "ornith-1.5:9b"
 # Autosummary cadence and rolling transcript lookback, in seconds.
 summary_interval_seconds = 600.0
 request_timeout = 300.0
+# Template is "auto", "none", or a filename from
+# whisper_live/summarizer_templates (for example, "SUMMARIZER_TEMPLATE-default.md").
+summary_template = "auto"
 
 [export]
 save_directory = "~/Documents/Meetings"

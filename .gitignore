@@ -27,3 +27,5 @@ summaries/
 transcripts/
 *.srt
 config.toml
+SUMMARIZER_TEMPLATE-*.md
+!whisper_live/summarizer_templates/SUMMARIZER_TEMPLATE-default.md

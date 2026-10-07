@@ -12,6 +12,8 @@ from gui.config import AudioConfig, LlmConfig, ServerConfig, load_config
 from gui.main_window import MainWindow
 from gui.pipewire import PipeWireRouter
 from gui.workers import LlmWorker, SttWorker, TranscriptBuffer
+from run_server import resolve_server_device
+from whisper_live.summarizer import build_system_prompt
 
 
 class PipeWireRouterTests(unittest.TestCase):
@@ -36,6 +38,21 @@ class PipeWireRouterTests(unittest.TestCase):
         self.assertEqual(linked, ["capture_AUX0", "monitor_AUX0"])
         self.assertEqual(missing, [])
         self.assertIn(["pw-link", "capture_AUX0", "whisperlive-capture:input_0"], calls)
+
+    def test_node_input_matching_ignores_case(self):
+        def runner(command, **kwargs):
+            if command == ["pw-link", "-i"]:
+                return type("Result", (), {"stdout": "Whisperlive-capture:input_0\n"})()
+            if command == ["pw-link", "-o"]:
+                return type("Result", (), {"stdout": "capture_AUX0\n"})()
+            return type("Result", (), {})()
+
+        router = PipeWireRouter("whisperlive-capture", ["capture_AUX0"], runner=runner)
+
+        linked, missing = router.relink()
+
+        self.assertEqual(linked, ["capture_AUX0"])
+        self.assertEqual(missing, [])
 
     def test_existing_link_does_not_block_later_sources(self):
         calls = []
@@ -80,6 +97,39 @@ class GuiConfigTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(ValueError, "unknown fields"):
+                load_config(path)
+
+    def test_rejects_unknown_enabled_summary_template(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(
+                '[llm]\nsummary_template = "SUMMARIZER_TEMPLATE-missing.md"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "Unknown summarizer template"):
+                load_config(path)
+
+    def test_server_device_uses_config_unless_cli_overrides(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(
+                '[server]\ndevice = "cuda"\n[llm]\nenabled = false\n',
+                encoding="utf-8",
+            )
+
+            self.assertEqual(resolve_server_device(path), "cuda")
+            self.assertEqual(resolve_server_device(path, "cpu"), "cpu")
+            self.assertEqual(resolve_server_device(), "auto")
+
+    def test_rejects_unknown_server_device(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.toml"
+            path.write_text(
+                '[server]\ndevice = "tpu"\n[llm]\nenabled = false\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(ValueError, "server.device"):
                 load_config(path)
 
 
@@ -257,7 +307,46 @@ class WorkerSupportTests(unittest.TestCase):
         with patch("gui.workers.urllib.request.urlopen", side_effect=open_request):
             worker._request_summary("transcript")
         payload = json.loads(requests[0].data.decode("utf-8"))
+        self.assertEqual(payload["system"], build_system_prompt())
         self.assertIn("The meeting had been in progress for 01:01.", payload["prompt"])
+
+    def test_template_change_updates_the_next_gui_request(self):
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                return iter([b'{"response":"summary","done":true}\n'])
+
+        with patch(
+            "gui.workers.build_system_prompt",
+            side_effect=["default role", "custom role"],
+        ):
+            worker = LlmWorker(LlmConfig(summary_template="none"), TranscriptBuffer())
+            worker.set_summary_template("SUMMARIZER_TEMPLATE-default.md")
+            requests = []
+
+            def open_request(request, timeout):
+                requests.append(request)
+                return Response()
+
+            with patch("gui.workers.urllib.request.urlopen", side_effect=open_request):
+                worker._request_summary("transcript")
+
+        payload = json.loads(requests[0].data.decode("utf-8"))
+        self.assertEqual(payload["system"], "custom role")
+
+    def test_invalid_template_does_not_replace_gui_prompt(self):
+        worker = LlmWorker(LlmConfig(summary_template="none"), TranscriptBuffer())
+        original = worker._system_prompt
+
+        with self.assertRaisesRegex(ValueError, "Unknown summarizer template"):
+            worker.set_summary_template("not-a-template.md")
+
+        self.assertEqual(worker._system_prompt, original)
 
     def test_autosummary_countdown_is_none_when_disabled(self):
         worker = LlmWorker(LlmConfig(summary_interval_seconds=60), TranscriptBuffer())

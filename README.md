@@ -52,6 +52,35 @@ source whisper_env/bin/activate
  pip install whisper-live
 ```
 
+#### Linux GPU/CPU environment for the GUI and server
+
+For a Linux source checkout using the repository's `whisper_env`, install the
+project with the PyTorch CUDA 12.8 package index:
+
+```bash
+./whisper_env/bin/python -m pip install \
+  --extra-index-url https://download.pytorch.org/whl/cu128 \
+  -e .
+./whisper_env/bin/python -m pip install -r requirements/gui.txt
+```
+
+The server uses faster-whisper/CTranslate2, whose current Linux CUDA runtime
+requires CUDA 12 libraries and cuDNN 9. The CUDA 12.8 PyTorch, TorchAudio, and
+TorchVision wheels keep their bundled NCCL and CUDA dependencies compatible
+with that runtime; mixing a CUDA 13 PyTorch wheel with older CUDA 12 NCCL
+libraries can prevent the server from starting with an
+`undefined symbol: ncclCommResume` import error. These CUDA-enabled wheels also
+run on CPU-only machines.
+
+Set `[server].device` in `config.toml` to `cpu`, `cuda`, or `auto`. The
+repository's `whisper-server.service` template passes that config file to the
+server; if the unit was previously installed, copy the updated unit to
+`/etc/systemd/system/whisper-server.service`, then run
+`sudo systemctl daemon-reload` and restart the service. An explicit `--device`
+argument overrides the config value. CTranslate2 selects the CUDA compute type
+supported by the detected GPU (for example, `float32` on older cards that do
+not support `float16` inference).
+
 ### OpenAI REST interface
 
 #### Server
@@ -230,6 +259,26 @@ client = TranscriptionClient(
 )
 ```
 The `hotwords` parameter is a comma-separated string passed directly to faster-whisper's keyword boosting. Also available in the REST API via the `hotwords` form field.
+
+#### Meeting Summary Templates
+The live capture GUI and `summarize_srt.py` use a selected template as the
+complete Ollama system prompt. The packaged
+`whisper_live/summarizer_templates/SUMMARIZER_TEMPLATE-default.md` is a
+boilerplate example with general meeting-summary instructions and comments
+suggesting where to add names, acronyms, terminology, and conventions. Copy it
+to `SUMMARIZER_TEMPLATE-<group name>.md` and tailor the complete prompt for that
+group.
+
+Templates are selected by filename. `auto` selects the alphabetically first
+filename containing `default` (case-insensitively); if none does, no group
+template is selected, leaving the system prompt empty. `none` also leaves the
+system prompt empty. In the GUI, choose a template from the selector. For the
+offline summarizer, use `--summary-template auto|none|<filename>` or list
+available templates with `--list-summary-templates`. `--prompt-file` uses its
+contents as the complete prompt instead of a template. In `config.toml`, set
+`[llm] summary_template` to `auto`, `none`, or an exact template filename. The
+live capture CLI accepts `--auto-summary-template` with the same choices. The
+GUI scans templates at startup; restart it after adding or removing files.
 
 #### Speaker Diarization
 Real-time speaker identification using pyannote.audio embeddings (optional dependency):
